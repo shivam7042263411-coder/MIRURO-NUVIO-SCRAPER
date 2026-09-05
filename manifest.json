@@ -1,0 +1,19 @@
+{
+  "name": "Miruro Anime",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "miruro",
+      "name": "Miruro Anime",
+      "description": "Anime search, episodes, and playable sources from Miruro for Nuvio",
+      "version": "1.0.0",
+      "author": "Nuvio Miruro Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/miruro.js",
+      "enabled": true,
+      "formats": ["m3u8"],
+      "logo": "https://www.miruro.tv/assets/logo-Dnw3w3dS.png",
+      "contentLanguage": ["en", "ja"]
+    }
+  ]
+}

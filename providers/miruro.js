@@ -1,19 +1,22 @@
 /*
- * Miruro Anime provider for Nuvio
+ * AniDap Anime provider for Nuvio
  *
- * Fetches playable HLS streams for anime titles from Miruro through a
- * self-hosted Miruro API backend. The provider maps an incoming TMDB id to
- * an AniList id, lists the anime's episodes, locates the requested episode,
- * and resolves its streaming sources.
+ * Scrapes hard-subbed anime sources from AniDap (anidap.lol) and returns
+ * playable HLS streams for Nuvio playback. The provider:
  *
- * NOTE: Miruro itself is protected by Cloudflare, so this plugin talks to a
- * self-hosted Miruro API instance that you run yourself (see README). Point
- * MIRURO_API_BASE at that instance.
+ *   1. Maps the incoming TMDB id to an AniList id via ani.zip.
+ *   2. Resolves the AniDap detail (slug) for that AniList id.
+ *   3. Lists the anime's episodes.
+ *   4. Resolves direct .m3u8 sources for the requested episode (sub/dub).
+ *
+ * No backend is required - AniDap's public API is scraped directly from
+ * inside Nuvio's QuickJS runtime.
  */
-var MIRURO_API_BASE = "http://localhost:8000";
+var ANIDAP_BASE = "https://anidap.lol";
+var ANIDAP_API = "https://chad.anidap.lol/rest/api";
 var MAPPING_BASE = "https://api.ani.zip/mappings";
 var DEFAULT_UA =
-  "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 function safeParseJson(text) {
   try {
@@ -23,25 +26,31 @@ function safeParseJson(text) {
   }
 }
 
-function getJson(url) {
+function fetchText(url, referer) {
   return fetch(url, {
     method: "GET",
     headers: {
       Accept: "application/json, text/plain, */*",
       "User-Agent": DEFAULT_UA,
+      Referer: referer || ANIDAP_BASE + "/",
     },
   })
     .then(function (res) {
       if (!res.ok) return null;
       return res.text();
     })
-    .then(function (text) {
-      if (!text) return null;
-      return safeParseJson(text);
-    })
     .catch(function () {
       return null;
     });
+}
+
+function getJson(url, referer) {
+  return fetchText(url, referer).then(function (text) {
+    if (!text) return null;
+    var parsed = safeParseJson(text);
+    if (parsed && typeof parsed === "object" && parsed.success !== undefined && parsed.success === false) return null;
+    return parsed;
+  });
 }
 
 /* Map a TMDB id (movie or tv) to an AniList id using Ani.zip's public mapping. */
@@ -59,100 +68,81 @@ function mapAnilistFromTmdb(tmdbId, mediaType) {
   });
 }
 
-/* Normalize the episodes response into a flat list of { provider, category, id, number }. */
-function flattenEpisodes(payload) {
-  var out = [];
-  if (!payload || typeof payload !== "object") return out;
-  var providers = payload.providers || {};
-  var providerKeys = Object.keys(providers);
-  for (var p = 0; p < providerKeys.length; p++) {
-    var providerName = providerKeys[p];
-    var provider = providers[providerName];
-    if (!provider || typeof provider !== "object") continue;
-    var audio = provider.episodes || provider.audio || {};
-    if (Array.isArray(audio)) {
-      collectEpisodesInAudio(out, providerName, "sub", audio);
-      continue;
-    }
-    var audioKeys = Object.keys(audio);
-    for (var a = 0; a < audioKeys.length; a++) {
-      var category = audioKeys[a];
-      var list = audio[category];
-      if (Array.isArray(list)) {
-        collectEpisodesInAudio(out, providerName, category, list);
-      }
-    }
-  }
-  return out;
-}
-
-function collectEpisodesInAudio(out, providerName, category, list) {
-  for (var i = 0; i < list.length; i++) {
-    var ep = list[i];
-    if (!ep || typeof ep !== "object") continue;
-    var id = ep.id || ep.episodeId || ep.slug || "";
-    var number = ep.number || ep.episode || ep.ep;
-    if (!id || number === undefined || number === null) continue;
-    out.push({
-      provider: providerName,
-      category: category,
-      id: String(id),
-      number: Number(number),
+/* Resolve the AniDap slug for an AniList id. */
+function fetchAnimeDetail(anilistId) {
+  if (!anilistId) return Promise.resolve("");
+  return getJson(ANIDAP_BASE + "/api/anime/" + encodeURIComponent(anilistId), ANIDAP_BASE + "/")
+    .then(function (payload) {
+      if (!payload || typeof payload !== "object") return "";
+      var data = payload.data || payload;
+      return typeof data.slug === "string" ? data.slug : "";
+    })
+    .catch(function () {
+      return "";
     });
-  }
 }
 
-/* Resolve the direct M3U8 URL(s) out of the sources payload. */
-function pullStreamUrls(payload) {
-  var out = [];
+/* Fetch the full episode list for a slug. */
+function fetchEpisodes(slug) {
+  if (!slug) return Promise.resolve([]);
+  return getJson(
+    ANIDAP_API + "/episodes?id=" + encodeURIComponent(slug) + "&refresh=false",
+    ANIDAP_BASE + "/"
+  ).then(function (payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.episodes)) return payload.episodes;
+    if (payload && Array.isArray(payload.data)) return payload.data;
+    return [];
+  });
+}
 
-  function pushUrl(u) {
-    if (typeof u === "string" && u) out.push(u);
-  }
+/* Fetch direct sources for a given episode number. */
+function fetchSources(slug, episodeNum, audioType, title) {
+  var type = audioType || "sub";
+  var url =
+    ANIDAP_API +
+    "/sources?id=" +
+    encodeURIComponent(slug) +
+    "&epNum=" +
+    encodeURIComponent(episodeNum) +
+    "&type=" +
+    encodeURIComponent(type) +
+    "&providerId=yuki";
 
-  if (!payload || typeof payload !== "object") return out;
+  return getJson(url, ANIDAP_BASE + "/").then(function (payload) {
+    var out = [];
+    if (!payload || typeof payload !== "object") return out;
+    var sources = payload.sources;
+    if (!Array.isArray(sources)) return out;
 
-  if (Array.isArray(payload)) {
-    for (var i = 0; i < payload.length; i++) {
-      var item = payload[i];
-      if (item && typeof item === "object") {
-        pushUrl(
-          item.url ||
-            item.file ||
-            item.src ||
-            item.link ||
-            item.stream ||
-            item.hls ||
-            item.links && item.links.stream
-        );
-      } else if (typeof item === "string") {
-        pushUrl(item);
+    var headers = {};
+    if (payload.headers && typeof payload.headers === "object") {
+      var hKeys = Object.keys(payload.headers);
+      for (var h = 0; h < hKeys.length; h++) {
+        headers[hKeys[h]] = payload.headers[hKeys[h]];
       }
+    }
+    headers["User-Agent"] = DEFAULT_UA;
+
+    for (var i = 0; i < sources.length; i++) {
+      var item = sources[i];
+      if (!item || typeof item !== "object") continue;
+      var streamUrl = item.url || "";
+      if (!streamUrl) continue;
+
+      var quality = detectQuality(item.quality || streamUrl) || 720;
+      out.push({
+        name: "AniDap " + type.toUpperCase() + " " + quality + "p",
+        title: title,
+        url: streamUrl,
+        quality: quality,
+        provider: "anidap",
+        format: formatFromUrl(streamUrl),
+        headers: headers,
+      });
     }
     return out;
-  }
-
-  var streamsRoot =
-    payload.streams ||
-    payload.sources ||
-    payload.result ||
-    payload.data ||
-    payload.response;
-
-  if (Array.isArray(streamsRoot)) {
-    for (var j = 0; j < streamsRoot.length; j++) {
-      var s = streamsRoot[j];
-      if (s && typeof s === "object") {
-        pushUrl(s.url || s.file || s.src || s.link || s.stream || s.hls || s.mp4);
-      }
-    }
-  }
-
-  if (payload.url) pushUrl(payload.url);
-  if (payload.stream) pushUrl(payload.stream);
-  if (payload.hls) pushUrl(payload.hls);
-
-  return out;
+  });
 }
 
 function detectQuality(value) {
@@ -170,47 +160,16 @@ function formatFromUrl(url) {
   return "hls";
 }
 
-function dedupe(urls) {
+function dedupe(streams) {
   var seen = Object.create(null);
   var out = [];
-  for (var i = 0; i < urls.length; i++) {
-    var u = urls[i];
-    if (!u || seen[u]) continue;
-    seen[u] = true;
-    out.push(u);
+  for (var i = 0; i < streams.length; i++) {
+    var key = String(streams[i].url || "") + "|" + String(streams[i].quality || "");
+    if (seen[key]) continue;
+    seen[key] = true;
+    out.push(streams[i]);
   }
   return out;
-}
-
-/* Find stream URLs for a single episode source id. */
-function fetchWatch(anilistId, provider, category, episodeId, title) {
-  var id = String(episodeId);
-  // id may already start with "watch/..." or just be the slug
-  var path = id.indexOf("watch/") === 0 ? id : "watch/" + provider + "/" + anilistId + "/" + category + "/" + id;
-  var url = MIRURO_API_BASE + "/" + path;
-
-  return getJson(url).then(function (parsed) {
-    var urls = pullStreamUrls(parsed);
-    var out = [];
-    for (var i = 0; i < urls.length; i++) {
-      var streamUrl = urls[i];
-      var quality = detectQuality(streamUrl) || 720;
-      out.push({
-        name: "Miruro " + provider + "-" + category + " " + quality + "p",
-        title: title,
-        url: streamUrl,
-        quality: quality,
-        provider: "miruro",
-        format: formatFromUrl(streamUrl),
-        headers: {
-          Referer: "https://miruro.tv/",
-          Origin: "https://miruro.tv",
-          "User-Agent": DEFAULT_UA,
-        },
-      });
-    }
-    return out;
-  });
 }
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -227,33 +186,33 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
   return mapAnilistFromTmdb(id, mediaType)
     .then(function (anilistId) {
-      if (!anilistId) return { anilistId: "", episodes: [] };
-      return getJson(MIRURO_API_BASE + "/episodes/" + anilistId).then(function (payload) {
-        return { anilistId: anilistId, episodes: flattenEpisodes(payload) };
-      });
+      if (!anilistId) return "";
+      return fetchAnimeDetail(anilistId);
     })
-    .then(function (data) {
-      if (!data.anilistId) return [];
-      var matches = [];
-      for (var i = 0; i < data.episodes.length; i++) {
-        var ep = data.episodes[i];
-        if (ep.number === wantedEpisode) matches.push(ep);
-      }
-      if (matches.length === 0) return [];
+    .then(function (slug) {
+      if (!slug) return [];
+      var types = isMovie ? ["sub"] : ["sub", "dub"];
+      return fetchEpisodes(slug).then(function (episodes) {
+        var episodeExists =
+          episodes.length === 0 ||
+          episodes.some(function (ep) {
+            return Number(ep.number) === wantedEpisode;
+          });
+        if (!episodeExists) return [];
 
-      var work = matches.map(function (ep) {
-        return fetchWatch(data.anilistId, ep.provider, ep.category, ep.id, title);
-      });
-
-      return Promise.all(work).then(function (results) {
-        var merged = [];
-        for (var r = 0; r < results.length; r++) {
-          var part = results[r] || [];
-          for (var k = 0; k < part.length; k++) {
-            merged.push(part[k]);
+        var work = types.map(function (type) {
+          return fetchSources(slug, wantedEpisode, type, title);
+        });
+        return Promise.all(work).then(function (results) {
+          var merged = [];
+          for (var r = 0; r < results.length; r++) {
+            var part = results[r] || [];
+            for (var k = 0; k < part.length; k++) {
+              merged.push(part[k]);
+            }
           }
-        }
-        return merged;
+          return dedupe(merged);
+        });
       });
     })
     .catch(function () {

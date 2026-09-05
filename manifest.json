@@ -1,18 +1,18 @@
 {
-  "name": "Miruro Anime",
-  "version": "1.0.0",
+  "name": "AniDap Anime",
+  "version": "1.1.0",
   "scrapers": [
     {
-      "id": "miruro",
-      "name": "Miruro Anime",
-      "description": "Anime search, episodes, and playable sources from Miruro for Nuvio",
-      "version": "1.0.0",
-      "author": "Nuvio Miruro Plugin",
+      "id": "anidap",
+      "name": "AniDap Anime",
+      "description": "Hard-subbed anime sources scraped directly from AniDap for Nuvio",
+      "version": "1.1.0",
+      "author": "Nuvio AniDap Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/miruro.js",
       "enabled": true,
       "formats": ["m3u8"],
-      "logo": "https://www.miruro.tv/assets/logo-Dnw3w3dS.png",
+      "logo": "https://anidap.lol/apple-touch-icon.png",
       "contentLanguage": ["en", "ja"]
     }
   ]

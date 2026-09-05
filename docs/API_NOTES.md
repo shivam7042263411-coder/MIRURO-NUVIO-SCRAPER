@@ -1,119 +1,107 @@
-# Miruro API Notes
+# AniDap API Notes
 
-This document describes the Miruro API endpoints the Nuvio provider relies on.
-It assumes you run a self-hosted instance of a reverse-engineered Miruro API
-(e.g. [walterwhite-69/Miruro-API](https://github.com/walterwhite-69/Miruro-API)).
+This document describes the AniDap API endpoints the Nuvio provider relies on.
+All endpoints are public (no auth, no cookies) but require a browser
+`User-Agent` and a `Referer` of `https://anidap.lol/`. AniDap rate-limits to
+about 100 requests/min per IP.
 
-## Base URL
+Headers required for every request:
 
-Configurable at the top of `providers/miruro.js` as `MIRURO_API_BASE`.
-Defaults to `http://localhost:8000`.
+```
+User-Agent: Mozilla/5.0 (Macintosh; ...) AppleWebKit/537.36 ... Chrome/126.0 Safari/537.36
+Referer: https://anidap.lol/
+Accept: application/json
+```
 
 ---
 
-## 1. Get episodes
+## 1. Map TMDB → AniList
 
-```
-GET /episodes/{anilist_id}
-```
-
-Returns the anime's episodes across multiple sources (`kiwi`, `arc`, `zoro`,
-`hop`, ...), organized by audio category (`sub` / `dub`).
-
-### Example response
-
-```json
-{
-  "mappings": {
-    "anilistId": 178005,
-    "malId": 56885
-  },
-  "providers": {
-    "kiwi": {
-      "episodes": {
-        "sub": [
-          {
-            "id": "watch/kiwi/178005/sub/animepahe-1",
-            "number": 1,
-            "title": "Episode 1",
-            "image": "https://...",
-            "airDate": "2026-01-04",
-            "duration": 1420
-          }
-        ],
-        "dub": []
-      }
-    }
-  }
-}
-```
-
-### Fields the provider uses
-
-- `providers.*.episodes.<category>[].id` — the watch path/slug.
-- `providers.*.episodes.<category>[].number` — episode number (matched against
-  the requested `episodeNum`).
-- The audio category key (`sub`/`dub`) is preserved into the stream label.
-
-Normalization is flexible: the provider also tolerates the audio object being a
-flat array, and episode id variants (`episodeId`, `slug`) as well as number
-variants (`episode`, `ep`).
-
----
-
-## 2. Get streaming sources
-
-```
-GET /watch/{provider}/{anilistId}/{category}/{slug}
-```
-
-or, passing the episode `id` directly when it already starts with `watch/`:
-
-```
-GET /{id}
-```
-
-### Example response
-
-```json
-{
-  "streams": [
-    { "url": "https://cdn.../master.m3u8", "type": "hls", "quality": "1080p" }
-  ],
-  "subtitles": [
-    { "file": "https://.../subs.vtt", "label": "English", "kind": "captions" }
-  ],
-  "intro": { "start": 0, "end": 90 },
-  "outro": { "start": 1300, "end": 1420 }
-}
-```
-
-### Fields the provider uses
-
-- `streams[].url` (also tolerated: `file`, `src`, `link`, `stream`, `hls`,
-  `mp4`, or a top-level `url`/`stream`/`hls`).
-- Quality is detected from the URL or item payload and used for the stream
-  label (`1080p`, `720p`, ...).
-
----
-
-## 3. TMDB → AniList mapping
-
-The provider uses the public [Ani.zip](https://ani.zip) mappings API to convert
-the incoming Nuvio TMDB id into an AniList id:
+The provider uses the public [Ani.zip](https://ani.zip) mappings API:
 
 ```
 GET https://api.ani.zip/mappings?themoviedb_id={tmdbId}        (series)
 GET https://api.ani.zip/mappings?themoviedb_movie_id={tmdbId}  (movie)
 ```
 
-If mapping fails, the provider resolves to no streams rather than erroring.
+Extracts `mappings.anilist_id`.
 
 ---
 
-## Response-shape tolerance
+## 2. Anime detail (get the slug)
 
-The provider is intentionally lenient about source payload shapes. It walks
-`streams` / `sources` / `result` / `data` / `response` roots and accepts bare
-arrays, so it continues to work across Miruro API implementations that wrap the
-documented response in extra envelope layers.
+```
+GET https://anidap.lol/api/anime/{anilist_id}
+```
+
+Returns a JSON payload whose `data` object contains `slug`, `tmdbId`,
+`anilistId`, `episodeCount`, `seasons`, and metadata. The provider takes
+`data.slug` as the identifier used in the streaming endpoints.
+
+---
+
+## 3. Episode list
+
+```
+GET https://chad.anidap.lol/rest/api/episodes?id={slug}&refresh=false
+```
+
+Returns an array of episodes:
+
+```json
+[
+  {
+    "number": 1,
+    "titles": { "en": "Jobless Reincarnation", "ja": "無職転生" },
+    "isFiller": false,
+    "hasDub": true,
+    "hasSub": true
+  }
+]
+```
+
+The provider matches `episode.number` against the requested `episodeNum`.
+
+---
+
+## 4. Direct sources
+
+```
+GET https://chad.anidap.lol/rest/api/sources?id={slug}&epNum={n}&type={sub|dub}&providerId=yuki
+```
+
+Returns direct playable HLS:
+
+```json
+{
+  "sources": [
+    {
+      "url": "https://vault-98.akirax.buzz/anime/.../master.m3u8",
+      "quality": "auto",
+      "type": "video/mpegurl"
+    }
+  ],
+  "tracks": [
+    { "id": "captions-1", "url": "https://.../subtitles/eng-2.vtt", "label": "English", "kind": "captions" }
+  ],
+  "audio": null,
+  "chapters": [{ "title": "Outro", "start": 1332, "end": 1427 }],
+  "headers": { "Referer": "https://megaplay.buzz/" }
+}
+```
+
+The provider takes each `sources[].url`, detects quality from the URL, and
+merges the returned `headers` with the playback `User-Agent`.
+
+---
+
+## Notes
+
+- `providerId=yuki` serves hard-subbed episodes (AnimePahe-style burned-in
+  subs). Other provider ids exist; `yuki` is the verified default.
+- `type=sub` / `type=dub` select audio; dub is attempted for TV where
+  available and skipped when the episode has none.
+- Movies resolve as episode 1 (`sub` only).
+- Response shapes are tolerated leniently: `episodes` responses that are
+  wrapped in `{ episodes: [] }` or `{ data: [] }` are handled, and failed
+  `success: false` responses are treated as no data rather than errors.

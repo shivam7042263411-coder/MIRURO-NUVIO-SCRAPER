@@ -1,12 +1,12 @@
 {
   "name": "Animeya Anime",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "scrapers": [
     {
       "id": "vidnest",
       "name": "Animeya (VidNest)",
       "description": "Hard-subbed AnimePahe-style anime sources via VidNest (animeya.cc backend) for Nuvio",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": "Nuvio VidNest Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/vidnest.js",
@@ -14,6 +14,17 @@
       "formats": ["m3u8"],
       "logo": "https://animeya.cc/apple-touch-icon.png",
       "contentLanguage": ["en", "ja"]
+    },
+    {
+      "id": "diag",
+      "name": "Animeya Diag (no-network test)",
+      "description": "Diagnostic: returns a fixed stream with zero network calls to verify Nuvio loads/renders this repo",
+      "version": "1.0.0",
+      "author": "Nuvio VidNest Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/diag.js",
+      "enabled": true,
+      "formats": ["m3u8"]
     }
   ]
 }

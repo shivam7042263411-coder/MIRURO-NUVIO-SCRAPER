@@ -1,6 +1,6 @@
 {
   "name": "Animeya Anime",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -23,6 +23,17 @@
       "author": "Nuvio VidNest Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/diag.js",
+      "enabled": true,
+      "formats": ["m3u8"]
+    },
+    {
+      "id": "diag2",
+      "name": "Animeya NetProbe (network test)",
+      "description": "Diagnostic: performs the exact two fetches the real provider makes and shows OK/FAIL/HANG in the source name",
+      "version": "1.0.0",
+      "author": "Nuvio VidNest Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/diag2.js",
       "enabled": true,
       "formats": ["m3u8"]
     }

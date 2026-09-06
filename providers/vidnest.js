@@ -83,9 +83,10 @@ var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "f
 var HAS_FETCH = typeof fetch === "function";
 var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
 
-/* Nuvio waits roughly 2s for a provider. Keep each fetch well under that
- * and the whole chain short so we always answer in time. */
-var FETCH_TIMEOUT_MS = 1000;
+/* Nuvio waits roughly 2s for a provider. The serial chain (mapping then
+ * sources) must clear that with margin, so each fetch is capped tight and
+ * there is no retry loop that could double the worst-case time. */
+var FETCH_TIMEOUT_MS = 800;
 
 function logStep(msg) {
   if (!HAS_CONSOLE) return;
@@ -216,12 +217,6 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
 
   return getJson(url)
     .then(parseResponse)
-    .then(function (parsed) {
-      if (parsed) return parsed;
-      /* one retry only - VidNest occasionally rate-limits an empty first hit.
-       * The 1s per-fetch timeout bounds total time. */
-      return getJson(url).then(parseResponse);
-    })
     .catch(function () {
       return null;
     });

@@ -1,6 +1,6 @@
 {
   "name": "Animeya Anime",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -34,6 +34,17 @@
       "author": "Nuvio VidNest Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/diag2.js",
+      "enabled": true,
+      "formats": ["m3u8"]
+    },
+    {
+      "id": "diag3",
+      "name": "Animeya Pipeline (full chain + timing)",
+      "description": "Diagnostic: runs the real map->animehub->decrypt chain and reports per-stage ms and source count in the source name",
+      "version": "1.0.0",
+      "author": "Nuvio VidNest Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/diag3.js",
       "enabled": true,
       "formats": ["m3u8"]
     }

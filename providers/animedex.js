@@ -155,7 +155,7 @@ function buildStream(url, quality, title) {
   var q = detectQuality(quality || url);
   var qualityLabel = q > 0 ? String(q) + "p" : "Auto";
   return {
-    name: "AnimeDex " + qualityLabel,
+    name: "AnimeDex Clean " + qualityLabel,
     title: title,
     url: url,
     quality: qualityLabel,

@@ -1,6 +1,6 @@
 {
   "name": "MASTER KEY",
-  "version": "1.12.0",
+  "version": "1.12.1",
   "scrapers": [
     {
       "id": "vidnest",
@@ -18,8 +18,8 @@
     {
       "id": "animedex",
       "name": "AnimeDex (Anivexa)",
-      "description": "Hard-subbed anime HLS via animedex.fun anivexa backend (AnimePahe-style direct m3u8) for Nuvio",
-      "version": "1.0.0",
+      "description": "Clean (no hard-subbed subs) anime HLS via animedex.fun anivexa backend for Nuvio; hard-subbed anime is on Animeya (VidNest)",
+      "version": "1.0.1",
       "author": "Nuvio AnimeDex Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/animedex.js",

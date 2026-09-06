@@ -1,34 +1,18 @@
 /*
- * VidNest (Animeya) Anime provider for Nuvio
+ * Animeya (VidNest) provider for Nuvio.
  *
- * Scrapes hard-subbed (AnimePahe-style burned-in subtitle) anime sources from
- * VidNest - the same backend that powers animeya.cc - and returns playable HLS
- * streams for Nuvio playback. The provider:
- *
- *   1. Maps the incoming TMDB id to an AniList id via ani.zip (no slug step
- *      needed - VidNest keys straight off the AniList id).
- *   2. Requests "animehub" sources (hard-subbed encodes, AnimePahe-style)
- *      which arrive custom-base64 encrypted.
- *   3. Decrypts, then returns the .m3u8 stream plus the CDN referer header
- *      the host requires.
- *
- * The api response selects between the same URL you ask for: e.g.
- *   https://new.vidnest.fun/animehub/{anilistId}/{episode}/{sub|dub}
- * returns a hard-subbed stream (no separate sub track - burned in), while
- * "aniwave_hls" returns a second hard-subbed host.
- *
- * Robustness notes: everything is promise-safe (no path rejects - each
- * sub-call resolves to [] instead), there are no in-sandbox CDN probes, and
- * every fetch has a hard timeout. Written against ES5-safe constructs so it
- * runs even in older QuickJS builds.
+ * Hard-subbed (AnimePahe-style burned-in subtitle) anime HLS from VidNest,
+ * the same backend that powers animeya.cc. Uses the identical runtime style
+ * as the proven-working probe: simple deadline() + fetchBody(), plain {}
+ * objects, no exotic globals. Kept deliberately small so it runs anywhere.
  */
 var VIDNEST_API = "https://new.vidnest.fun";
 var MAPPING_BASE = "https://api.ani.zip/mappings";
 var DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
-/* Pre-seeded TMDB->AniList ids so popular titles skip the (slow) ani.zip
- * round-trip entirely. Keyed as "<mediaType>:<tmdbId>". */
+/* Pre-seeded TMDB->AniList ids so popular titles skip the slow ani.zip
+ * round-trip. Keyed as "<mediaType>:<tmdbId>". */
 var LOCAL_ANILIST = {
   "tv:94664": "108465",    /* Mushoku Tensei */
   "tv:37854": "21",        /* One Piece */
@@ -38,209 +22,92 @@ var LOCAL_ANILIST = {
   "tv:16497": "101922"     /* Demon Slayer (alt seed) */
 };
 
-/* Custom base64 alphabet used by VidNest to obfuscate its JSON responses. */
+/* VidNest custom base64 alphabet. */
 var VN_ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
-var VN_INDEX = null;
 
-var caches = {
-  mapping: Object.create(null),
-  decrypt: Object.create(null)
-};
+function deadline(ms) {
+  if (typeof setTimeout === "function") {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+  var end = Date.now() + ms;
+  function tick(resolve) {
+    if (Date.now() >= end) { resolve(); } else {
+      Promise.resolve().then(function () { tick(resolve); });
+    }
+  }
+  return new Promise(function (resolve) { tick(resolve); });
+}
 
 function safeParseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    return null;
-  }
+  try { return JSON.parse(text); } catch (e) { return null; }
 }
 
-function vnIndex() {
-  if (VN_INDEX) return VN_INDEX;
-  var m = {};
-  for (var i = 0; i < VN_ALPHABET.length; i++) {
-    m[VN_ALPHABET.charAt(i)] = i;
-  }
-  VN_INDEX = m;
-  return m;
-}
-
-/* Decode a VidNest custom-base64 string into a binary (byte-per-char) string.
- * Works on the JSON payload, which is UTF-8/ASCII, so String.fromCharCode is
- * accurate for every byte. */
+/* Decode a VidNest custom-base64 payload to a binary string. */
 function vnDecode(str) {
-  var idx = vnIndex();
+  var m = {};
+  for (var i = 0; i < VN_ALPHABET.length; i++) m[VN_ALPHABET.charAt(i)] = i;
   var out = [];
-  var i = 0;
-  while (i < str.length) {
-    var b1 = idx[str.charAt(i)] === undefined ? 64 : idx[str.charAt(i)];
-    var b2 = idx[str.charAt(i + 1)] === undefined ? 64 : idx[str.charAt(i + 1)];
-    var b3 = idx[str.charAt(i + 2)] === undefined ? 64 : idx[str.charAt(i + 2)];
-    var b4 = idx[str.charAt(i + 3)] === undefined ? 64 : idx[str.charAt(i + 3)];
+  var k = 0;
+  while (k < str.length) {
+    var b1 = m[str.charAt(k)] === undefined ? 64 : m[str.charAt(k)];
+    var b2 = m[str.charAt(k + 1)] === undefined ? 64 : m[str.charAt(k + 1)];
+    var b3 = m[str.charAt(k + 2)] === undefined ? 64 : m[str.charAt(k + 2)];
+    var b4 = m[str.charAt(k + 3)] === undefined ? 64 : m[str.charAt(k + 3)];
     out.push((b1 << 2) | (b2 >> 4));
     if (b3 !== 64) out.push(((b2 & 15) << 4) | (b3 >> 2));
     if (b4 !== 64) out.push(((b3 & 3) << 6) | b4);
-    i += 4;
+    k += 4;
   }
   var bin = "";
   for (var j = 0; j < out.length; j++) bin += String.fromCharCode(out[j]);
   return bin;
 }
 
-/* Nuvio's QuickJS sandbox may not expose setTimeout/clearTimeout (the app
- * enforces its own global timeout instead) or fetch. Detect them so we never
- * throw when absent - resolve [] / "" cleanly instead. */
-var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "function";
-var HAS_FETCH = typeof fetch === "function";
-var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
-
-/* Nuvio waits roughly 2s for a provider. VidNest answers in ~0.5s on a good
- * link but intermittently 502s (a fast fail), so each fetch is capped at
- * 900ms and one retry per host + the parallel race keeps worst case ~1.8s. */
-var FETCH_TIMEOUT_MS = 900;
-
-function logStep(msg) {
-  if (!HAS_CONSOLE) return;
-  try {
-    console.log("[vidnest] " + msg);
-  } catch (e) {}
-}
-
-/* fetch helper with a best-effort timeout. Always resolves with a string (or
- * an empty string on any failure) so callers never handle rejections. */
-function fetchText(url) {
-  var timer = null;
-  var timedOut = false;
-
-  var cleanup = function () {
-    if (timer !== null && HAS_TIMEOUT) clearTimeout(timer);
-  };
-
+/* Fetch text with a hard deadline. Always resolves to {status, body}.
+ * Never rejects. */
+function fetchBody(url, ms, headers) {
   return new Promise(function (resolve) {
-    if (HAS_TIMEOUT) {
-      timer = setTimeout(function () {
-        timedOut = true;
-        resolve("");
-      }, FETCH_TIMEOUT_MS);
-    }
-
-    var finish = function (text) {
-      if (timedOut) return;
-      cleanup();
-      resolve(typeof text === "string" ? text : "");
-    };
-
-    if (!HAS_FETCH) {
-      cleanup();
-      resolve("");
-      return;
-    }
-
-    var headers = {
-      Accept: "*/*",
-      "User-Agent": DEFAULT_UA
-    };
-
-    fetch(url, {
-      method: "GET",
-      headers: headers
-    })
-      .then(function (res) {
-        if (res && typeof res.text === "function") {
-          return res.text();
+    var done = false;
+    function out(s, b) { if (!done) { done = true; resolve({ status: s, body: b }); } }
+    deadline(ms).then(function () { out(0, ""); });
+    if (typeof fetch !== "function") { out(-1, ""); return; }
+    fetch(url, { method: "GET", headers: headers || { "User-Agent": "Mozilla/5.0" } })
+      .then(function (r) {
+        var st = r && typeof r.status === "number" ? r.status : 0;
+        if (r && typeof r.text === "function") {
+          r.text().then(function (t) { out(st, String(t || "")); });
+        } else {
+          out(st, "");
         }
-        return String(res);
       })
-      .then(finish)
-      .catch(function () {
-        if (timedOut) return;
-        cleanup();
-        resolve("");
-      });
+      .catch(function () { out(-2, ""); });
   });
 }
 
-function getJson(url) {
-  return fetchText(url).then(function (text) {
-    if (!text) return null;
-    return safeParseJson(text);
-  });
-}
-
-function getJsonCached(url, cacheKey, cacheStore) {
-  if (cacheStore && cacheKey !== undefined && cacheStore[cacheKey]) {
-    return Promise.resolve(cacheStore[cacheKey]);
+/* Parse and decrypt a VidNest response body into a bundle object, or null. */
+function parseBundle(body) {
+  var raw = safeParseJson(String(body || ""));
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.encrypted && typeof raw.data === "string") {
+    return safeParseJson(vnDecode(raw.data));
   }
-  return getJson(url).then(function (parsed) {
-    if (parsed && cacheStore) cacheStore[cacheKey] = parsed;
-    return parsed;
-  });
+  return raw;
 }
 
-/* Map a TMDB id (movie or tv) to an AniList id. Local table first (no
- * network), ani.zip fallback for anything unknown. Never rejects; resolves
- * with "" when unmapped. */
-function mapAnilistFromTmdb(tmdbId, mediaType) {
+/* Map TMDB -> AniList. Local table first, ani.zip fallback. Returns a
+ * promise resolving to the anilist id (string) or "". */
+function mapAnilist(tmdbId, mediaType) {
   if (!tmdbId) return Promise.resolve("");
-
-  var localKey = mediaType + ":" + tmdbId;
-  if (LOCAL_ANILIST[localKey]) return Promise.resolve(LOCAL_ANILIST[localKey]);
+  var local = LOCAL_ANILIST[mediaType + ":" + tmdbId];
+  if (local) return Promise.resolve(local);
 
   var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
   var url = MAPPING_BASE + "?" + field + "=" + encodeURIComponent(String(tmdbId));
-
-  return getJsonCached(url, String(tmdbId) + ":" + mediaType, caches.mapping).then(function (parsed) {
-    if (!parsed || typeof parsed !== "object") return "";
-    var mappings = parsed.mappings || {};
-    var mapped = mappings.anilist_id;
-    return mapped !== undefined && mapped !== null ? String(mapped) : "";
+  return fetchBody(url, 900).then(function (r) {
+    var parsed = safeParseJson(r.body || "");
+    var m = parsed && parsed.mappings ? parsed.mappings : null;
+    return m && m.anilist_id !== undefined && m.anilist_id !== null ? String(m.anilist_id) : "";
   });
-}
-
-/* Fetch one VidNest source bundle for an episode and decrypt it. Returns the
- * parsed JSON (sources: [{url, quality, type, server, referer}], multiSrc,
- * intro, outro) or null when nothing is found. Never rejects. */
-function fetchSources(anilistId, episodeNum, audioType, endpoint) {
-  if (!anilistId) return Promise.resolve(null);
-  var type = audioType || "sub";
-  var key = anilistId + "|" + episodeNum + "|" + type + "|" + endpoint;
-  if (caches.decrypt[key]) return Promise.resolve(caches.decrypt[key]);
-
-  var url =
-    VIDNEST_API +
-    "/" +
-    endpoint +
-    "/" +
-    encodeURIComponent(anilistId) +
-    "/" +
-    encodeURIComponent(episodeNum) +
-    "/" +
-    encodeURIComponent(type);
-
-  var parseResponse = function (raw) {
-    var parsed = null;
-    if (raw && typeof raw === "object" && raw.encrypted && typeof raw.data === "string") {
-      parsed = safeParseJson(vnDecode(raw.data));
-    } else if (raw && typeof raw === "object") {
-      parsed = raw;
-    }
-    if (!parsed || typeof parsed !== "object" || parsed.success === false) return null;
-    if (!Array.isArray(parsed.sources) || parsed.sources.length === 0) return null;
-    caches.decrypt[key] = parsed;
-    return parsed;
-  };
-
-  /* VidNest intermittently 502s on the first hit (fast fail). One retry is
-   * cheap and still fits the budget - the race masks both hosts anyway. */
-  return getJson(url)
-    .then(parseResponse)
-    .then(function (parsed) {
-      if (parsed) return parsed;
-      return getJson(url).then(parseResponse);
-    })
-    .catch(function () {
-      return null;
-    });
 }
 
 function detectQuality(value) {
@@ -255,28 +122,13 @@ function pad2(n) {
   return s.length > 1 ? s : "0" + s;
 }
 
-function dedupe(streams) {
-  var seen = Object.create(null);
-  var out = [];
-  for (var i = 0; i < streams.length; i++) {
-    var key = String(streams[i].url || "") + "|" + String(streams[i].quality || "");
-    if (seen[key]) continue;
-    seen[key] = true;
-    out.push(streams[i]);
-  }
-  return out;
-}
-
 function buildStream(streamUrl, item, audioType, title) {
   var headers = { "User-Agent": DEFAULT_UA };
   if (item.referer) headers["Referer"] = item.referer;
-
   var quality = detectQuality(item.quality || streamUrl);
   var qualityLabel = quality > 0 ? String(quality) + "p" : "Auto";
-  var label = "Animeya " + audioType.toUpperCase() + " " + qualityLabel;
-
   return {
-    name: label,
+    name: "Animeya " + audioType.toUpperCase() + " " + qualityLabel,
     title: title,
     url: streamUrl,
     quality: qualityLabel,
@@ -285,18 +137,58 @@ function buildStream(streamUrl, item, audioType, title) {
   };
 }
 
-/* Convert a decrypted bundle into a list of stream objects. Never rejects. */
-function collectFromBundle(bundle, audioType, title) {
+function collectStreams(bundle, audioType, title) {
   var out = [];
-  if (!bundle || !Array.isArray(bundle.sources)) return out;
-  for (var i = 0; i < bundle.sources.length; i++) {
-    var item = bundle.sources[i];
-    if (!item || typeof item !== "object") continue;
-    var streamUrl = item.url || item.file || "";
-    if (!streamUrl) continue;
-    out.push(buildStream(streamUrl, item, audioType, title));
+  if (bundle && Array.isArray(bundle.sources)) {
+    for (var i = 0; i < bundle.sources.length; i++) {
+      var item = bundle.sources[i];
+      if (!item || typeof item !== "object") continue;
+      var sUrl = item.url || item.file || "";
+      if (!sUrl) continue;
+      out.push(buildStream(sUrl, item, audioType, title));
+    }
   }
   return out;
+}
+
+function dedupe(streams) {
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < streams.length; i++) {
+    var key = streams[i].url + "|" + streams[i].quality;
+    if (seen[key]) continue;
+    seen[key] = true;
+    out.push(streams[i]);
+  }
+  return out;
+}
+
+/* Fetch one source endpoint for an episode. Retries once on a 502/empty
+ * (fast-fail) to ride out intermittent server errors. */
+function fetchSourceBundle(anilistId, episodeNum, audioType, endpoint) {
+  if (!anilistId) return Promise.resolve(null);
+  var type = audioType || "sub";
+  var url =
+    VIDNEST_API + "/" + endpoint + "/" +
+    encodeURIComponent(anilistId) + "/" +
+    encodeURIComponent(episodeNum) + "/" +
+    encodeURIComponent(type);
+  var headers = {
+    "User-Agent": DEFAULT_UA,
+    "Referer": "https://play.echovideo.ru/"
+  };
+
+  var attempt = function (headers) {
+    return fetchBody(url, 1500, headers).then(function (r) {
+      if (!r.body) return null;
+      return parseBundle(r.body);
+    }).catch(function () { return null; });
+  };
+
+  return attempt(headers).then(function (bundle) {
+    if (bundle && Array.isArray(bundle.sources) && bundle.sources.length > 0) return bundle;
+    return attempt(headers);
+  });
 }
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -304,67 +196,26 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   if (!id) return Promise.resolve([]);
 
   var isMovie = mediaType === "movie";
-  var wantedSeason = isMovie ? 1 : Number(seasonNum) || 1;
   var wantedEpisode = isMovie ? 1 : Number(episodeNum) || 1;
-  var title =
-    mediaType === "movie"
-      ? "Movie " + id
-      : "S" + pad2(wantedSeason) + "E" + pad2(wantedEpisode);
+  var title = isMovie ? "Movie " + id : "S01E" + pad2(wantedEpisode);
 
-  logStep("start " + id + " " + mediaType + " S" + wantedSeason + "E" + wantedEpisode);
-
-  return mapAnilistFromTmdb(id, mediaType)
-    .then(function (anilistId) {
-      if (!anilistId) {
-        logStep("no anilist mapping for " + id);
-        return [];
-      }
-      logStep("anilist=" + anilistId + " ep=" + wantedEpisode);
-
-      /* Fetch animehub and aniwave (both hard-sub) in PARALLEL and resolve
-       * with the first one that yields streams. VidNest is slow, so racing
-       * both gives the fastest positive answer and hides per-host latency. */
-      function raceFirst(bundles) {
-        return new Promise(function (resolve) {
-          var left = bundles.length;
-          for (var i = 0; i < bundles.length; i++) {
-            bundles[i].then(function (n) {
-              var list = n !== null ? collectFromBundle(n, "sub", title) : [];
-              if (list.length > 0) {
-                resolve(list);
-              } else if (--left === 0) {
-                resolve([]);
-              }
-            });
-          }
-        });
-      }
-
-      var fetches = [
-        fetchSources(anilistId, wantedEpisode, "sub", "animehub"),
-        fetchSources(anilistId, wantedEpisode, "sub", "aniwave_hls")
-      ];
-
-      return raceFirst(fetches).then(function (winners) {
-        if (winners.length > 0) return winners;
-
-        /* Both sub hosts empty - fall back to dub on animehub. */
-        return fetchSources(anilistId, wantedEpisode, "dub", "animehub").then(function (n) {
-          return n !== null ? collectFromBundle(n, "dub", title) : [];
-        });
+  return mapAnilist(id, mediaType).then(function (anilistId) {
+    if (!anilistId) return [];
+    /* animehub (hard-sub) first; aniwave as fallback, same hard-sub. */
+    return fetchSourceBundle(anilistId, wantedEpisode, "sub", "animehub").then(function (b) {
+      var list = collectStreams(b, "sub", title);
+      if (list.length > 0) return list;
+      return fetchSourceBundle(anilistId, wantedEpisode, "sub", "aniwave_hls").then(function (b2) {
+        return collectStreams(b2, "sub", title);
       });
-    })
-    .then(function (finalList) {
-      logStep("returning " + finalList.length + " stream(s)");
-      return dedupe(finalList);
-    })
-    .catch(function (err) {
-      logStep("error: " + (err && err.message ? err.message : String(err)));
-      return [];
     });
+  }).then(function (finalList) {
+    return dedupe(finalList);
+  }).catch(function () {
+    return [];
+  });
 }
 
-/* Export for Nuvio / React Native compatibility (Hermes) */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { getStreams };
 } else {

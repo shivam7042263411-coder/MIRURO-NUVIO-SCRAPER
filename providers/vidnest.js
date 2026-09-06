@@ -27,6 +27,17 @@ var MAPPING_BASE = "https://api.ani.zip/mappings";
 var DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
+/* Pre-seeded TMDB->AniList ids so popular titles skip the (slow) ani.zip
+ * round-trip entirely. Keyed as "<mediaType>:<tmdbId>". */
+var LOCAL_ANILIST = {
+  "tv:94664": "108465",    /* Mushoku Tensei */
+  "tv:37854": "21",        /* One Piece */
+  "tv:209867": "154587",   /* Frieren */
+  "tv:1429": "16498",      /* Attack on Titan */
+  "tv:85937": "101922",    /* Demon Slayer */
+  "tv:16497": "101922"     /* Demon Slayer (alt seed) */
+};
+
 /* Custom base64 alphabet used by VidNest to obfuscate its JSON responses. */
 var VN_ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
 var VN_INDEX = null;
@@ -83,10 +94,11 @@ var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "f
 var HAS_FETCH = typeof fetch === "function";
 var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
 
-/* Nuvio waits roughly 2s for a provider. The serial chain (mapping then
- * sources) must clear that with margin, so each fetch is capped tight and
- * there is no retry loop that could double the worst-case time. */
-var FETCH_TIMEOUT_MS = 800;
+/* Nuvio waits roughly 2s for a provider. The single source fetch can take
+ * VidNest up to ~2.5s on a warm CDN, so we cap just under the budget and
+ * resolve with whatever the fastest positive host returns. No mapping
+ * round-trip for seeded titles (see LOCAL_ANILIST), so total = 1 fetch. */
+var FETCH_TIMEOUT_MS = 1900;
 
 function logStep(msg) {
   if (!HAS_CONSOLE) return;
@@ -166,10 +178,14 @@ function getJsonCached(url, cacheKey, cacheStore) {
   });
 }
 
-/* Map a TMDB id (movie or tv) to an AniList id using Ani.zip. Never rejects;
- * resolves with "" when unmapped. */
+/* Map a TMDB id (movie or tv) to an AniList id. Local table first (no
+ * network), ani.zip fallback for anything unknown. Never rejects; resolves
+ * with "" when unmapped. */
 function mapAnilistFromTmdb(tmdbId, mediaType) {
   if (!tmdbId) return Promise.resolve("");
+
+  var localKey = mediaType + ":" + tmdbId;
+  if (LOCAL_ANILIST[localKey]) return Promise.resolve(LOCAL_ANILIST[localKey]);
 
   var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
   var url = MAPPING_BASE + "?" + field + "=" + encodeURIComponent(String(tmdbId));
@@ -300,43 +316,42 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }
       logStep("anilist=" + anilistId + " ep=" + wantedEpisode);
 
-      /* Try sub on animehub first (hard-subbed, AnimePahe-style). If that
-       * yields nothing, fall back to the aniwave host. Both sub & dub are
-       * requested in parallel to cut latency. Only as many requests as
-       * needed - Nuvio gives us ~2s. */
-      var collect = function (n) {
-        return n !== null ? collectFromBundle(n, "sub", title) : [];
-      };
-
-      return fetchSources(anilistId, wantedEpisode, "sub", "animehub")
-        .then(function (bundle) {
-          var subs = collect(bundle);
-          if (subs.length > 0) return subs;
-
-          /* animehub had nothing - try the other host; also grab dub. */
-          return Promise.all([
-            fetchSources(anilistId, wantedEpisode, "sub", "aniwave_hls").then(collect),
-            fetchSources(anilistId, wantedEpisode, "dub", "animehub").then(function (n) {
-              return n !== null ? collectFromBundle(n, "dub", title) : [];
-            })
-          ]).then(function (results) {
-            var merged = [];
-            for (var r = 0; r < results.length; r++) {
-              var part = results[r];
-              for (var k = 0; k < part.length; k++) {
-                merged.push(part[k]);
+      /* Fetch animehub and aniwave (both hard-sub) in PARALLEL and resolve
+       * with the first one that yields streams. VidNest is slow, so racing
+       * both gives the fastest positive answer and hides per-host latency. */
+      function raceFirst(bundles) {
+        return new Promise(function (resolve) {
+          var left = bundles.length;
+          for (var i = 0; i < bundles.length; i++) {
+            bundles[i].then(function (n) {
+              var list = n !== null ? collectFromBundle(n, "sub", title) : [];
+              if (list.length > 0) {
+                resolve(list);
+              } else if (--left === 0) {
+                resolve([]);
               }
-            }
-            return merged;
-          });
-        })
-        .then(function (merged) {
-          return dedupe(merged);
+            });
+          }
         });
+      }
+
+      var fetches = [
+        fetchSources(anilistId, wantedEpisode, "sub", "animehub"),
+        fetchSources(anilistId, wantedEpisode, "sub", "aniwave_hls")
+      ];
+
+      return raceFirst(fetches).then(function (winners) {
+        if (winners.length > 0) return winners;
+
+        /* Both sub hosts empty - fall back to dub on animehub. */
+        return fetchSources(anilistId, wantedEpisode, "dub", "animehub").then(function (n) {
+          return n !== null ? collectFromBundle(n, "dub", title) : [];
+        });
+      });
     })
     .then(function (finalList) {
       logStep("returning " + finalList.length + " stream(s)");
-      return finalList;
+      return dedupe(finalList);
     })
     .catch(function (err) {
       logStep("error: " + (err && err.message ? err.message : String(err)));

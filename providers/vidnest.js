@@ -155,7 +155,7 @@ function buildStream(streamUrl, item, audioType, title) {
   var quality = detectQuality(item.quality || streamUrl);
   var qualityLabel = quality > 0 ? String(quality) + "p" : "Auto";
   return {
-    name: "Animeya " + audioType.toUpperCase() + " " + qualityLabel,
+    name: "Master-Source 1",
     title: title,
     url: streamUrl,
     quality: qualityLabel,

@@ -683,13 +683,15 @@ function pad2(n) {
   return s.length > 1 ? s : "0" + s;
 }
 
-/* Resolve one episode to a stream object (or null). */
-function resolveEpisode(anilistId, episodeNum, title) {
+/* Resolve one episode to a stream object (or null). `dbg` collects a
+ * short trace of fetch results so failures are visible in the source name. */
+function resolveEpisode(anilistId, episodeNum, title, dbg) {
   if (!anilistId) return Promise.resolve(null);
   var url = ANIMELOK_API + "/" + encodeURIComponent(anilistId) + "/" + encodeURIComponent(episodeNum);
   var ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-  return fetchBody(url, 1200, { "User-Agent": ua, "Referer": "https://animelok.live/" })
+  return fetchBody(url, 1400, { "User-Agent": ua, "Referer": "https://animelok.live/" })
     .then(function (r) {
+      dbg.push("api=" + r.status + "/" + (r.body || "").length);
       var api = safeParseJson(r.body || "");
       var servers = api && Array.isArray(api.servers) ? api.servers : null;
       if (!servers || servers.length === 0) return null;
@@ -704,28 +706,31 @@ function resolveEpisode(anilistId, episodeNum, title) {
           if (s && s.dataType === "sub" && s.dataLink) { chosen = s; break; }
         }
       }
-      if (!chosen) return null;
+      if (!chosen) { dbg.push("nohd"); return null; }
       return chosen.dataLink;
     })
     .then(function (dataLink) {
       if (!dataLink) return null;
       var headers = { "User-Agent": ua, "Referer": FLIX_ORIGIN + "/" };
-      return fetchBody(dataLink, 1300, headers).then(function (r2) {
+      return fetchBody(dataLink, 1600, headers).then(function (r2) {
+        dbg.push("embed=" + r2.status + "/" + (r2.body || "").length);
         var pageData = extractRouteData(r2.body || "");
-        if (!pageData) return null;
+        if (!pageData) { dbg.push("nopage"); return null; }
         var L = pageData[deriveFields(pageData.obfuscation_seed || "").tokenField] || "";
-        if (!L) return null;
+        if (!L) { dbg.push("noL"); return null; }
         var origin = "https://flixcloud.cc";
         var dlHost = String(dataLink).match(/^https?:\/\/[^/]+/);
         if (dlHost) origin = dlHost[0];
-        return fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 1100, {
+        return fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 1200, {
           "User-Agent": ua,
           "Referer": origin + "/e/" + L
         }).then(function (r3) {
+          dbg.push("m3u8=" + r3.status + "/" + (r3.body || "").length);
           var tokenJson = safeParseJson(r3.body || "");
-          if (!tokenJson) return null;
+          if (!tokenJson) { dbg.push("notoken"); return null; }
           var url = decryptFlix(pageData, tokenJson);
-          if (!url) return null;
+          if (!url) { dbg.push("decryptfail"); return null; }
+          dbg.push("ok");
           return {
             name: "Animelok HD-1 Sub",
             title: title,
@@ -741,21 +746,36 @@ function resolveEpisode(anilistId, episodeNum, title) {
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   var id = String(tmdbId || "").trim();
+  var t0 = Date.now();
+  var dbg = [];
+  var budgetMs = 2500;
+  function dbgStream() {
+    dbg.push("t=" + (Date.now() - t0) + "ms");
+    return [{
+      name: "Animelok: " + dbg.join(" "),
+      title: "debug",
+      url: FLIX_ORIGIN + "/e/0?v=1",
+      quality: "Auto",
+      type: "direct"
+    }];
+  }
   var chain = Promise.resolve([]);
   if (id) {
     var isMovie = mediaType === "movie";
     var wantedEpisode = isMovie ? 1 : Number(episodeNum) || 1;
     var title = isMovie ? "Movie " + id : "S01E" + pad2(wantedEpisode);
     chain = mapAnilist(id, mediaType).then(function (anilistId) {
+      dbg.push("map=" + anilistId);
       if (!anilistId) return [];
-      return resolveEpisode(anilistId, wantedEpisode, title).then(function (stream) {
-        return stream ? [stream] : [];
+      return resolveEpisode(anilistId, wantedEpisode, title, dbg).then(function (stream) {
+        return stream ? [stream] : dbgStream();
       });
-    }).catch(function () {
-      return [];
+    }).catch(function (e) {
+      dbg.push("err=" + String(e && e.message || e));
+      return dbgStream();
     });
   }
-  return Promise.race([chain, deadline(1500).then(function () { return []; })]);
+  return Promise.race([chain, deadline(budgetMs).then(dbgStream)]);
 }
 
 if (typeof module !== "undefined" && module.exports) {

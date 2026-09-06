@@ -759,7 +759,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   var id = String(tmdbId || "").trim();
   var t0 = Date.now();
   var dbg = [];
-  var budgetMs = 2500;
+  var budgetMs = 3300;
   function dbgStream() {
     dbg.push("t=" + (Date.now() - t0) + "ms");
     return [{

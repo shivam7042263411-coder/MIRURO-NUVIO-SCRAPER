@@ -19,7 +19,7 @@
       "id": "animelok",
       "name": "Animelok (flixcloud)",
       "description": "Hard-subbed anime from Animelok via flixcloud with on-device WASM->JS decryption for Nuvio",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "Nuvio Animelok Plugin",
       "supportedTypes": ["tv", "movie"],
       "filename": "providers/animelok.js",

@@ -720,37 +720,40 @@ function resolveEpisode(anilistId, episodeNum, title, dbg) {
     })
     .then(function (dataLink) {
       if (!dataLink) return null;
-      /* The embed iframe lives inside animelok.live, so it gets an
-       * animelok referer in a real browser. */
-      var headers = { "User-Agent": ua, "Referer": "https://animelok.live/" };
-      return fetchBody(dataLink, 1600, headers).then(function (r2) {
+      var linkStr = String(dataLink);
+      var tokenMatch = linkStr.match(/\/e\/([^\/?#]+)/);
+      var L = tokenMatch ? tokenMatch[1] : "";
+      if (!L) { dbg.push("noL"); return null; }
+      var origin = "https://flixcloud.cc";
+      var hostMatch = linkStr.match(/^(https?:\/\/[^/]+)/);
+      if (hostMatch) origin = hostMatch[1];
+      var embedH = { "User-Agent": ua, "Referer": "https://animelok.live/" };
+      var m3u8H = { "User-Agent": ua, "Referer": origin + "/e/" + L };
+      /* embed page and m3u8 token fetch run in parallel to cut latency */
+      return Promise.all([
+        fetchBody(dataLink, 1500, embedH),
+        fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 1200, m3u8H)
+      ]).then(function (results) {
+        var r2 = results[0], r3 = results[1];
         dbg.push("embed=" + r2.status + "/" + (r2.body || "").length);
+        dbg.push("m3u8=" + r3.status + "/" + (r3.body || "").length);
         var pageData = extractRouteData(r2.body || "");
         if (!pageData) { dbg.push("nopage"); return null; }
-        var L = pageData[deriveFields(pageData.obfuscation_seed || "").tokenField] || "";
-        if (!L) { dbg.push("noL"); return null; }
-        var origin = "https://flixcloud.cc";
-        var dlHost = String(dataLink).match(/^https?:\/\/[^/]+/);
-        if (dlHost) origin = dlHost[0];
-        return fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 1200, {
-          "User-Agent": ua,
-          "Referer": origin + "/e/" + L
-        }).then(function (r3) {
-          dbg.push("m3u8=" + r3.status + "/" + (r3.body || "").length);
-          var tokenJson = safeParseJson(r3.body || "");
-          if (!tokenJson) { dbg.push("notoken"); return null; }
-          var url = decryptFlix(pageData, tokenJson);
-          if (!url) { dbg.push("decryptfail"); return null; }
-          dbg.push("ok");
-          return {
-            name: "Animelok HD-1 Sub",
-            title: title,
-            url: url,
-            quality: "Auto",
-            type: "direct",
-            headers: { "User-Agent": ua, "Referer": origin + "/" }
-          };
-        });
+        var Lcheck = pageData[deriveFields(pageData.obfuscation_seed || "").tokenField] || "";
+        if (!Lcheck) { dbg.push("noL"); return null; }
+        var tokenJson = safeParseJson(r3.body || "");
+        if (!tokenJson) { dbg.push("notoken"); return null; }
+        var sUrl = decryptFlix(pageData, tokenJson);
+        if (!sUrl) { dbg.push("decryptfail"); return null; }
+        dbg.push("ok");
+        return {
+          name: "Animelok HD-1 Sub",
+          title: title,
+          url: sUrl,
+          quality: "Auto",
+          type: "direct",
+          headers: { "User-Agent": ua, "Referer": origin + "/", "Origin": origin }
+        };
       });
     });
 }

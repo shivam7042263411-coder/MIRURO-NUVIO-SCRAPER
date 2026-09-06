@@ -83,8 +83,9 @@ var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "f
 var HAS_FETCH = typeof fetch === "function";
 var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
 
-/* Nuvio waits only ~2s for a provider. Keep each fetch well under that. */
-var FETCH_TIMEOUT_MS = 1500;
+/* Nuvio waits roughly 2s for a provider. Keep each fetch well under that
+ * and the whole chain short so we always answer in time. */
+var FETCH_TIMEOUT_MS = 1000;
 
 function logStep(msg) {
   if (!HAS_CONSOLE) return;
@@ -217,7 +218,8 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
     .then(parseResponse)
     .then(function (parsed) {
       if (parsed) return parsed;
-      /* one retry only - VidNest occasionally rate-limits an empty first hit */
+      /* one retry only - VidNest occasionally rate-limits an empty first hit.
+       * The 1s per-fetch timeout bounds total time. */
       return getJson(url).then(parseResponse);
     })
     .catch(function () {
@@ -230,13 +232,6 @@ function detectQuality(value) {
   var str = String(value);
   var match = str.match(/(2160|1440|1080|720|480|360)/);
   return match ? parseInt(match[1], 10) : 0;
-}
-
-function formatFromUrl(url) {
-  var lower = String(url || "").toLowerCase();
-  if (lower.indexOf(".m3u8") !== -1) return "m3u8";
-  if (lower.indexOf(".mp4") !== -1) return "mp4";
-  return "hls";
 }
 
 function pad2(n) {
@@ -261,16 +256,15 @@ function buildStream(streamUrl, item, audioType, title) {
   if (item.referer) headers["Referer"] = item.referer;
 
   var quality = detectQuality(item.quality || streamUrl);
-  var label = "Animeya " + audioType.toUpperCase();
-  if (quality > 0) label += " " + quality + "p";
+  var qualityLabel = quality > 0 ? String(quality) + "p" : "Auto";
+  var label = "Animeya " + audioType.toUpperCase() + " " + qualityLabel;
 
   return {
     name: label,
     title: title,
     url: streamUrl,
-    quality: quality > 0 ? quality : 1080,
-    provider: "vidnest",
-    format: formatFromUrl(streamUrl),
+    quality: qualityLabel,
+    type: "direct",
     headers: headers
   };
 }
@@ -355,9 +349,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     });
 }
 
-/* Export for Nuvio / React Native compatibility */
+/* Export for Nuvio / React Native compatibility (Hermes) */
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { getStreams: getStreams };
+  module.exports = { getStreams };
 } else {
   global.getStreams = getStreams;
 }

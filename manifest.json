@@ -1,6 +1,6 @@
 {
-  "name": "Animeya Anime",
-  "version": "1.9.0",
+  "name": "ANIMASTER",
+  "version": "1.9.1",
   "scrapers": [
     {
       "id": "vidnest",

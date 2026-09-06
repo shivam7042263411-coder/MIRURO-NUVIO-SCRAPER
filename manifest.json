@@ -1,6 +1,6 @@
 {
   "name": "MASTER KEY",
-  "version": "1.10.0",
+  "version": "1.12.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -16,16 +16,16 @@
       "contentLanguage": ["en", "ja"]
     },
     {
-      "id": "animelok",
-      "name": "Animelok (flixcloud)",
-      "description": "Hard-subbed anime from Animelok via flixcloud with on-device WASM->JS decryption for Nuvio",
-      "version": "1.0.5",
-      "author": "Nuvio Animelok Plugin",
+      "id": "animedex",
+      "name": "AnimeDex (Anivexa)",
+      "description": "Hard-subbed anime HLS via animedex.fun anivexa backend (AnimePahe-style direct m3u8) for Nuvio",
+      "version": "1.0.0",
+      "author": "Nuvio AnimeDex Plugin",
       "supportedTypes": ["tv", "movie"],
-      "filename": "providers/animelok.js",
+      "filename": "providers/animedex.js",
       "enabled": true,
       "formats": ["m3u8"],
-      "logo": "https://animelok.live/favicon.ico",
+      "logo": "https://animedex.fun/favicon.ico",
       "contentLanguage": ["en", "ja"]
     }
   ]

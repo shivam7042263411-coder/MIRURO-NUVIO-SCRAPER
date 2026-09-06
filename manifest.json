@@ -1,6 +1,6 @@
 {
   "name": "AniDap Anime",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "scrapers": [
     {
       "id": "anidap",
@@ -13,6 +13,19 @@
       "enabled": true,
       "formats": ["m3u8"],
       "logo": "https://anidap.lol/apple-touch-icon.png",
+      "contentLanguage": ["en", "ja"]
+    },
+    {
+      "id": "vidnest",
+      "name": "Animeya (VidNest)",
+      "description": "Hard-subbed AnimePahe-style anime sources via VidNest (animeya.cc backend) for Nuvio",
+      "version": "1.0.0",
+      "author": "Nuvio VidNest Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/vidnest.js",
+      "enabled": true,
+      "formats": ["m3u8"],
+      "logo": "https://animeya.cc/apple-touch-icon.png",
       "contentLanguage": ["en", "ja"]
     }
   ]

@@ -1,12 +1,28 @@
 /*
- * Full-pipeline probe for Nuvio. Does the EXACT same work as the real
- * provider and reports the result right in the stream name:
- *   status + whether the body decrypts + how many playable sources came out.
+ * Dynamic-path probe for Nuvio. Runs the REAL provider's exact logic:
+ *   LOCAL_ANILIST / ani.zip mapping -> animehub -> decrypt -> extract URL
+ * but reports the resolved anilist id + real video URL in the STREAM NAME so
+ * it is readable in Nuvio. The playable URL is still the mux test stream.
  *
- * "P-SRC src=200 dec=OK n=1 t=400ms"  -> pipeline works; real provider should work
- * "P-SRC src=200 dec=FAIL"            -> body doesn't decrypt in Nuvio (Hermes bug)
- * "P-SRC src=200 n=0"                 -> servers returned nothing for this ep
+ * What the name tells us:
+ *  "DYN anilist=""           -> Nuvio passed bad ids; local map + ani.zip both missed
+ *  "DYN anilist=108465 url=… -> dynamic path works; the provider file is the only difference
+ *  "DYN fail                 -> dynamic fetch path fails while plain fetch works
  */
+var VIDNEST_API = "https://new.vidnest.fun";
+var MAPPING_BASE = "https://api.ani.zip/mappings";
+var DEFAULT_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+var LOCAL_ANILIST = {
+  "tv:94664": "108465",
+  "tv:37854": "21",
+  "tv:209867": "154587",
+  "tv:1429": "16498",
+  "tv:85937": "101922",
+  "tv:16497": "101922"
+};
+var VN_ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
+
 function deadline(ms) {
   if (typeof setTimeout === "function") {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
@@ -20,11 +36,13 @@ function deadline(ms) {
   return new Promise(function (resolve) { tick(resolve); });
 }
 
-/* VidNest custom base64 (same alphabet as the real provider). */
-var VN_ALPHABET_V = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
-function vnDecodeV(str) {
+function safeParseJson(text) {
+  try { return JSON.parse(text); } catch (e) { return null; }
+}
+
+function vnDecode(str) {
   var m = {};
-  for (var i = 0; i < VN_ALPHABET_V.length; i++) m[VN_ALPHABET_V.charAt(i)] = i;
+  for (var i = 0; i < VN_ALPHABET.length; i++) m[VN_ALPHABET.charAt(i)] = i;
   var out = [];
   var k = 0;
   while (k < str.length) {
@@ -40,10 +58,6 @@ function vnDecodeV(str) {
   var bin = "";
   for (var j = 0; j < out.length; j++) bin += String.fromCharCode(out[j]);
   return bin;
-}
-
-function safeParseV(text) {
-  try { return JSON.parse(text); } catch (e) { return null; }
 }
 
 function fetchBody(url, ms, headers) {
@@ -65,27 +79,52 @@ function fetchBody(url, ms, headers) {
   });
 }
 
+function mapAnilist(tmdbId, mediaType) {
+  if (!tmdbId) return Promise.resolve("");
+  var local = LOCAL_ANILIST[mediaType + ":" + tmdbId];
+  if (local) return Promise.resolve(local);
+  var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
+  var url = MAPPING_BASE + "?" + field + "=" + encodeURIComponent(String(tmdbId));
+  return fetchBody(url, 900).then(function (r) {
+    var parsed = safeParseJson(r.body || "");
+    var m = parsed && parsed.mappings ? parsed.mappings : null;
+    return m && m.anilist_id !== undefined && m.anilist_id !== null ? String(m.anilist_id) : "";
+  });
+}
+
+function fetchSourceBundle(anilistId, episodeNum, audioType, endpoint) {
+  if (!anilistId) return Promise.resolve(null);
+  var type = audioType || "sub";
+  var url =
+    VIDNEST_API + "/" + endpoint + "/" +
+    encodeURIComponent(anilistId) + "/" +
+    encodeURIComponent(episodeNum) + "/" +
+    encodeURIComponent(type);
+  var headers = { "User-Agent": DEFAULT_UA, "Referer": "https://play.echovideo.ru/" };
+  return fetchBody(url, 1500, headers).then(function (r) {
+    if (!r.body) return null;
+    var raw = safeParseJson(r.body);
+    if (!raw || typeof raw !== "object") return null;
+    return raw.encrypted && typeof raw.data === "string" ? safeParseJson(vnDecode(raw.data)) : raw;
+  }).catch(function () { return null; });
+}
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  var t0 = Date.now();
-  return fetchBody("https://new.vidnest.fun/animehub/108465/1/sub", 2000, {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://play2.echovideo.ru/"
-  }).then(function (r) {
-    var head = "P-SRC src=" + r.status + " t=" + (Date.now() - t0) + "ms";
-    var text = r.body || "";
-    var raw = safeParseV(text);
-    if (!raw || typeof raw !== "object") return [mk(head + " body=NOTJSON", text.slice(0, 40))];
-    if (raw.encrypted && typeof raw.data === "string") {
-      var dec;
-      try { dec = vnDecodeV(raw.data); } catch (e) { dec = ""; }
-      var parsed = safeParseV(dec);
-      if (!parsed || typeof parsed !== "object") return [mk(head + " dec=FAIL", dec.slice(0, 40))];
-      var n = Array.isArray(parsed.sources) ? parsed.sources.length : -1;
-      var u = n > 0 && parsed.sources[0].url ? parsed.sources[0].url : "";
-      return [mk(head + " dec=OK n=" + n, u.slice(0, 36))];
-    }
-    if (Array.isArray(raw.sources)) return [mk(head + " plain n=" + raw.sources.length, text.slice(0, 40))];
-    return [mk(head + " nodecrypt ", text.slice(0, 40))];
+  var id = String(tmdbId || "").trim();
+  var isMovie = mediaType === "movie";
+  var wantedEpisode = isMovie ? 1 : Number(episodeNum) || 1;
+  var tag = "tmdb=" + id + " mv=" + String(isMovie) + " ep=" + wantedEpisode;
+
+  return mapAnilist(id, mediaType).then(function (anilistId) {
+    if (!anilistId) return [mk("DYN " + tag + " anilist=EMPTY", "")];
+    return fetchSourceBundle(anilistId, wantedEpisode, "sub", "animehub").then(function (b) {
+      if (b && Array.isArray(b.sources) && b.sources.length > 0) {
+        return [mk("DYN " + tag + " anilist=" + anilistId + " url=" + String(b.sources[0].url).slice(0, 24), b.sources[0].url)];
+      }
+      return [mk("DYN " + tag + " anilist=" + anilistId + " noSources", "")];
+    });
+  }).catch(function (e) {
+    return [mk("DYN " + tag + " fail " + (e && e.message ? e.message : String(e)), "")];
   });
 }
 

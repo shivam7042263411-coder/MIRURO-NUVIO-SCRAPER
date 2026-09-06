@@ -94,11 +94,10 @@ var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "f
 var HAS_FETCH = typeof fetch === "function";
 var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
 
-/* Nuvio waits roughly 2s for a provider. The single source fetch can take
- * VidNest up to ~2.5s on a warm CDN, so we cap just under the budget and
- * resolve with whatever the fastest positive host returns. No mapping
- * round-trip for seeded titles (see LOCAL_ANILIST), so total = 1 fetch. */
-var FETCH_TIMEOUT_MS = 1900;
+/* Nuvio waits roughly 2s for a provider. VidNest answers in ~0.5s on a good
+ * link but intermittently 502s (a fast fail), so each fetch is capped at
+ * 900ms and one retry per host + the parallel race keeps worst case ~1.8s. */
+var FETCH_TIMEOUT_MS = 900;
 
 function logStep(msg) {
   if (!HAS_CONSOLE) return;
@@ -231,8 +230,14 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
     return parsed;
   };
 
+  /* VidNest intermittently 502s on the first hit (fast fail). One retry is
+   * cheap and still fits the budget - the race masks both hosts anyway. */
   return getJson(url)
     .then(parseResponse)
+    .then(function (parsed) {
+      if (parsed) return parsed;
+      return getJson(url).then(parseResponse);
+    })
     .catch(function () {
       return null;
     });

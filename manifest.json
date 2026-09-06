@@ -1,6 +1,6 @@
 {
   "name": "Animeya Anime",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -14,6 +14,17 @@
       "formats": ["m3u8"],
       "logo": "https://animeya.cc/apple-touch-icon.png",
       "contentLanguage": ["en", "ja"]
+    },
+    {
+      "id": "probe",
+      "name": "Animeya Probe (status codes)",
+      "description": "Diagnostic: reports the exact HTTP status codes your device gets from VidNest and ani.zip so we can see server-side blocks",
+      "version": "1.0.0",
+      "author": "Nuvio VidNest Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/probe.js",
+      "enabled": true,
+      "formats": ["m3u8"]
     }
   ]
 }

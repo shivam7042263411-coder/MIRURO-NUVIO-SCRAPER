@@ -1,6 +1,6 @@
 {
   "name": "MASTER KEY",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -13,6 +13,19 @@
       "enabled": true,
       "formats": ["m3u8"],
       "logo": "https://animeya.cc/apple-touch-icon.png",
+      "contentLanguage": ["en", "ja"]
+    },
+    {
+      "id": "animelok",
+      "name": "Animelok (flixcloud)",
+      "description": "Hard-subbed anime from Animelok via flixcloud with on-device WASM->JS decryption for Nuvio",
+      "version": "1.0.0",
+      "author": "Nuvio Animelok Plugin",
+      "supportedTypes": ["tv", "movie"],
+      "filename": "providers/animelok.js",
+      "enabled": true,
+      "formats": ["m3u8"],
+      "logo": "https://animelok.live/favicon.ico",
       "contentLanguage": ["en", "ja"]
     }
   ]

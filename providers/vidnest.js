@@ -15,15 +15,14 @@
  * The api response selects between the same URL you ask for: e.g.
  *   https://new.vidnest.fun/animehub/{anilistId}/{episode}/{sub|dub}
  * returns a hard-subbed stream (no separate sub track - burned in), while
- * "aniwave_hls" returns a second hard-subbed host. The "hianime/anime" path
- * returns soft VTT tracks instead and is therefore skipped here.
+ * "aniwave_hls" returns a second hard-subbed host.
  *
- * No backend is required - the public API is scraped directly from inside
- * Nuvio's QuickJS runtime. Written against ES5-safe constructs so it runs
- * even in older QuickJS builds.
+ * Robustness notes: everything is promise-safe (no path rejects - each
+ * sub-call resolves to [] instead), there are no in-sandbox CDN probes, and
+ * every fetch has a hard timeout. Written against ES5-safe constructs so it
+ * runs even in older QuickJS builds.
  */
 var VIDNEST_API = "https://new.vidnest.fun";
-var VIDNEST_REFERER = "https://megaplay.buzz/";
 var MAPPING_BASE = "https://api.ani.zip/mappings";
 var DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -77,49 +76,67 @@ function vnDecode(str) {
   return bin;
 }
 
-/* fetch helper with a timeout guard. Tries with the VidNest origin headers
- * first; if the sandbox rejects them it retries with minimal ones. */
-function fetchText(url, originHeaders) {
+/* Nuvio's QuickJS sandbox may not expose setTimeout/clearTimeout (the app
+ * enforces its own global timeout instead) or fetch. Detect them so we never
+ * throw when absent - resolve [] / "" cleanly instead. */
+var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "function";
+var HAS_FETCH = typeof fetch === "function";
+
+/* fetch helper with a best-effort timeout. Always resolves with a string (or
+ * an empty string on any failure) so callers never handle rejections. */
+function fetchText(url) {
   var timer = null;
   var timedOut = false;
 
   var cleanup = function () {
-    if (timer) clearTimeout(timer);
+    if (timer !== null && HAS_TIMEOUT) clearTimeout(timer);
   };
 
-  return new Promise(function (resolve, reject) {
-    timer = setTimeout(function () {
-      timedOut = true;
-      reject(new Error("timeout"));
-    }, 8000);
+  return new Promise(function (resolve) {
+    if (HAS_TIMEOUT) {
+      timer = setTimeout(function () {
+        timedOut = true;
+        resolve("");
+      }, 6000);
+    }
+
+    var finish = function (text) {
+      if (timedOut) return;
+      cleanup();
+      resolve(typeof text === "string" ? text : "");
+    };
+
+    if (!HAS_FETCH) {
+      cleanup();
+      resolve("");
+      return;
+    }
 
     var attempt = function (withHeaders) {
       var headers = {
-        Accept: "application/json, text/plain, */*"
+        Accept: "*/*"
       };
-      if (withHeaders && originHeaders) {
+      if (withHeaders) {
         headers["User-Agent"] = DEFAULT_UA;
-        headers["Origin"] = VIDNEST_REFERER;
-        headers["Referer"] = VIDNEST_REFERER;
       }
       return fetch(url, {
         method: "GET",
         headers: headers
       })
         .then(function (res) {
-          return res.text();
+          if (res && typeof res.text === "function") {
+            return res.text();
+          }
+          return String(res);
         })
-        .then(function (text) {
-          cleanup();
-          resolve(text);
-        })
-        .catch(function (err) {
+        .then(finish)
+        .catch(function () {
           if (timedOut) return;
           if (withHeaders) {
             attempt(false);
           } else {
             cleanup();
-            reject(err || new Error("fetch failed"));
+            resolve("");
           }
         });
     };
@@ -128,7 +145,7 @@ function fetchText(url, originHeaders) {
 }
 
 function getJson(url) {
-  return fetchText(url, true).then(function (text) {
+  return fetchText(url).then(function (text) {
     if (!text) return null;
     return safeParseJson(text);
   });
@@ -144,7 +161,8 @@ function getJsonCached(url, cacheKey, cacheStore) {
   });
 }
 
-/* Map a TMDB id (movie or tv) to an AniList id using Ani.zip. */
+/* Map a TMDB id (movie or tv) to an AniList id using Ani.zip. Never rejects;
+ * resolves with "" when unmapped. */
 function mapAnilistFromTmdb(tmdbId, mediaType) {
   if (!tmdbId) return Promise.resolve("");
 
@@ -161,7 +179,7 @@ function mapAnilistFromTmdb(tmdbId, mediaType) {
 
 /* Fetch one VidNest source bundle for an episode and decrypt it. Returns the
  * parsed JSON (sources: [{url, quality, type, server, referer}], multiSrc,
- * intro, outro) or null when nothing is found. */
+ * intro, outro) or null when nothing is found. Never rejects. */
 function fetchSources(anilistId, episodeNum, audioType, endpoint) {
   if (!anilistId) return Promise.resolve(null);
   var type = audioType || "sub";
@@ -177,11 +195,8 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
     "/" +
     encodeURIComponent(episodeNum) +
     "/" +
-    encodeURIComponent(type) +
-    (endpoint.indexOf("hianime") === 0 ? "/hd-2" : "");
+    encodeURIComponent(type);
 
-  /* VidNest intermittently answers empty/non-JSON when rate limited, so retry
-   * a couple of times before giving up. */
   var attempts = 0;
 
   var tryOnce = function () {
@@ -200,38 +215,17 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
     });
   };
 
-  return tryOnce().then(function (parsed) {
-    if (parsed) return parsed;
-    if (attempts >= 3) return null;
-    return new Promise(function (resolve) {
-      setTimeout(function () {
-        resolve(
-          tryOnce().then(function (again) {
-            if (again) return again;
-            if (attempts >= 3) return null;
-            return new Promise(function (resolve2) {
-              setTimeout(function () {
-                resolve2(tryOnce());
-              }, 700);
-            });
-          })
-        );
-      }, 700);
+  var run = function () {
+    return tryOnce().then(function (parsed) {
+      if (parsed) return parsed;
+      if (attempts >= 2) return null;
+      return run();
     });
-  });
-}
+  };
 
-/* Parse a master HLS playlist and return the highest RESOLUTION found (or 0). */
-function maxPlaylistResolution(text) {
-  if (!text) return 0;
-  var re = /RESOLUTION=(\d{3,5})x(\d{3,5})/g;
-  var best = 0;
-  var m;
-  while ((m = re.exec(text)) !== null) {
-    var h = parseInt(m[2], 10);
-    if (h > best) best = h;
-  }
-  return best;
+  return run().catch(function () {
+    return null;
+  });
 }
 
 function detectQuality(value) {
@@ -246,15 +240,6 @@ function formatFromUrl(url) {
   if (lower.indexOf(".m3u8") !== -1) return "m3u8";
   if (lower.indexOf(".mp4") !== -1) return "mp4";
   return "hls";
-}
-
-/* Fetch the source's own referer (from the API response) and pass it as the
- * stream header. The m3u8 also resolves without it, but sending it is safer. */
-function fetchStreamHeaders(referer) {
-  var headers = {};
-  if (referer) headers["Referer"] = referer;
-  headers["User-Agent"] = DEFAULT_UA;
-  return headers;
 }
 
 function pad2(n) {
@@ -274,9 +259,14 @@ function dedupe(streams) {
   return out;
 }
 
-function buildStream(streamUrl, audioType, title, headers, quality, viaEndpoint) {
-  var label =
-    "Animeya " + audioType.toUpperCase() + (quality > 0 ? " " + quality + "p" : "");
+function buildStream(streamUrl, item, audioType, title) {
+  var headers = { "User-Agent": DEFAULT_UA };
+  if (item.referer) headers["Referer"] = item.referer;
+
+  var quality = detectQuality(item.quality || streamUrl);
+  var label = "Animeya " + audioType.toUpperCase();
+  if (quality > 0) label += " " + quality + "p";
+
   return {
     name: label,
     title: title,
@@ -288,43 +278,18 @@ function buildStream(streamUrl, audioType, title, headers, quality, viaEndpoint)
   };
 }
 
-function collectFromBundle(bundle, audioType, title, viaEndpoint) {
-  if (!bundle || !Array.isArray(bundle.sources) || bundle.sources.length === 0) {
-    return Promise.resolve([]);
-  }
-  var seen = Object.create(null);
-  var jobs = [];
+/* Convert a decrypted bundle into a list of stream objects. Never rejects. */
+function collectFromBundle(bundle, audioType, title) {
+  var out = [];
+  if (!bundle || !Array.isArray(bundle.sources)) return out;
   for (var i = 0; i < bundle.sources.length; i++) {
     var item = bundle.sources[i];
     if (!item || typeof item !== "object") continue;
     var streamUrl = item.url || item.file || "";
     if (!streamUrl) continue;
-    if (seen[streamUrl]) continue;
-    seen[streamUrl] = true;
-    jobs.push(resolveOne(streamUrl, item, audioType, title, viaEndpoint));
+    out.push(buildStream(streamUrl, item, audioType, title));
   }
-  return Promise.all(jobs).then(function (parts) {
-    var out = [];
-    for (var j = 0; j < parts.length; j++) {
-      if (parts[j]) out.push(parts[j]);
-    }
-    return out;
-  });
-}
-
-function resolveOne(streamUrl, item, audioType, title, viaEndpoint) {
-  var headers = fetchStreamHeaders(item.referer);
-  /* Best effort quality: prefer RESOLUTION lines in a master playlist; else
-   * fall back to hints in the source URL. (No segment probing here - hosts
-   * like imgnex are referer-locked, so keep it light.) */
-  return fetchText(streamUrl, false).then(function (playlistText) {
-    var quality = maxPlaylistResolution(playlistText);
-    if (quality <= 0) quality = detectQuality(item.quality || streamUrl);
-    return buildStream(streamUrl, audioType, title, headers, quality, viaEndpoint);
-  }).catch(function () {
-    var quality = detectQuality(item.quality || streamUrl);
-    return buildStream(streamUrl, audioType, title, headers, quality, viaEndpoint);
-  });
+  return out;
 }
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -343,25 +308,21 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     .then(function (anilistId) {
       if (!anilistId) return [];
 
-      /* 1) "animehub" = hard-subbed encodes (burned in, no subtitle track).
-       * Some titles have no animehub source; fall back to 2) "aniwave_hls"
-       * (also hard-subbed, different host). Sub and dub are separate calls. */
+      /* animehub = hard-subbed encodes (burned in). aniwave_hls = second
+       * hard-subbed host. Try sub then dub on each. */
       var endpoints = ["animehub", "aniwave_hls"];
       var work = [];
-
       for (var e = 0; e < endpoints.length; e++) {
-        (function (endpoint) {
-          work.push(
-            fetchSources(anilistId, wantedEpisode, "sub", endpoint).then(function (bundle) {
-              return collectFromBundle(bundle, "sub", title, endpoint);
-            })
-          );
-          work.push(
-            fetchSources(anilistId, wantedEpisode, "dub", endpoint).then(function (bundle) {
-              return collectFromBundle(bundle, "dub", title, endpoint);
-            })
-          );
-        })(endpoints[e]);
+        work.push(
+          fetchSources(anilistId, wantedEpisode, "sub", endpoints[e]).then(function (bundle) {
+            return collectFromBundle(bundle, "sub", title);
+          })
+        );
+        work.push(
+          fetchSources(anilistId, wantedEpisode, "dub", endpoints[e]).then(function (bundle) {
+            return collectFromBundle(bundle, "dub", title);
+          })
+        );
       }
 
       return Promise.all(work).then(function (results) {
@@ -380,4 +341,4 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     });
 }
 
-module.exports = { getStreams };
+module.exports = { getStreams: getStreams };

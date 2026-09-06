@@ -81,6 +81,17 @@ function vnDecode(str) {
  * throw when absent - resolve [] / "" cleanly instead. */
 var HAS_TIMEOUT = typeof setTimeout === "function" && typeof clearTimeout === "function";
 var HAS_FETCH = typeof fetch === "function";
+var HAS_CONSOLE = typeof console === "object" && console !== null && typeof console.log === "function";
+
+/* Nuvio waits only ~2s for a provider. Keep each fetch well under that. */
+var FETCH_TIMEOUT_MS = 1500;
+
+function logStep(msg) {
+  if (!HAS_CONSOLE) return;
+  try {
+    console.log("[vidnest] " + msg);
+  } catch (e) {}
+}
 
 /* fetch helper with a best-effort timeout. Always resolves with a string (or
  * an empty string on any failure) so callers never handle rejections. */
@@ -97,7 +108,7 @@ function fetchText(url) {
       timer = setTimeout(function () {
         timedOut = true;
         resolve("");
-      }, 6000);
+      }, FETCH_TIMEOUT_MS);
     }
 
     var finish = function (text) {
@@ -112,35 +123,27 @@ function fetchText(url) {
       return;
     }
 
-    var attempt = function (withHeaders) {
-      var headers = {
-        Accept: "*/*"
-      };
-      if (withHeaders) {
-        headers["User-Agent"] = DEFAULT_UA;
-      }
-      return fetch(url, {
-        method: "GET",
-        headers: headers
-      })
-        .then(function (res) {
-          if (res && typeof res.text === "function") {
-            return res.text();
-          }
-          return String(res);
-        })
-        .then(finish)
-        .catch(function () {
-          if (timedOut) return;
-          if (withHeaders) {
-            attempt(false);
-          } else {
-            cleanup();
-            resolve("");
-          }
-        });
+    var headers = {
+      Accept: "*/*",
+      "User-Agent": DEFAULT_UA
     };
-    attempt(true);
+
+    fetch(url, {
+      method: "GET",
+      headers: headers
+    })
+      .then(function (res) {
+        if (res && typeof res.text === "function") {
+          return res.text();
+        }
+        return String(res);
+      })
+      .then(finish)
+      .catch(function () {
+        if (timedOut) return;
+        cleanup();
+        resolve("");
+      });
   });
 }
 
@@ -197,35 +200,29 @@ function fetchSources(anilistId, episodeNum, audioType, endpoint) {
     "/" +
     encodeURIComponent(type);
 
-  var attempts = 0;
-
-  var tryOnce = function () {
-    attempts++;
-    return getJson(url).then(function (raw) {
-      var parsed = null;
-      if (raw && typeof raw === "object" && raw.encrypted && typeof raw.data === "string") {
-        parsed = safeParseJson(vnDecode(raw.data));
-      } else if (raw && typeof raw === "object") {
-        parsed = raw;
-      }
-      if (!parsed || typeof parsed !== "object" || parsed.success === false) return null;
-      if (!Array.isArray(parsed.sources) || parsed.sources.length === 0) return null;
-      caches.decrypt[key] = parsed;
-      return parsed;
-    });
+  var parseResponse = function (raw) {
+    var parsed = null;
+    if (raw && typeof raw === "object" && raw.encrypted && typeof raw.data === "string") {
+      parsed = safeParseJson(vnDecode(raw.data));
+    } else if (raw && typeof raw === "object") {
+      parsed = raw;
+    }
+    if (!parsed || typeof parsed !== "object" || parsed.success === false) return null;
+    if (!Array.isArray(parsed.sources) || parsed.sources.length === 0) return null;
+    caches.decrypt[key] = parsed;
+    return parsed;
   };
 
-  var run = function () {
-    return tryOnce().then(function (parsed) {
+  return getJson(url)
+    .then(parseResponse)
+    .then(function (parsed) {
       if (parsed) return parsed;
-      if (attempts >= 2) return null;
-      return run();
+      /* one retry only - VidNest occasionally rate-limits an empty first hit */
+      return getJson(url).then(parseResponse);
+    })
+    .catch(function () {
+      return null;
     });
-  };
-
-  return run().catch(function () {
-    return null;
-  });
 }
 
 function detectQuality(value) {
@@ -304,41 +301,63 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       ? "Movie " + id
       : "S" + pad2(wantedSeason) + "E" + pad2(wantedEpisode);
 
+  logStep("start " + id + " " + mediaType + " S" + wantedSeason + "E" + wantedEpisode);
+
   return mapAnilistFromTmdb(id, mediaType)
     .then(function (anilistId) {
-      if (!anilistId) return [];
-
-      /* animehub = hard-subbed encodes (burned in). aniwave_hls = second
-       * hard-subbed host. Try sub then dub on each. */
-      var endpoints = ["animehub", "aniwave_hls"];
-      var work = [];
-      for (var e = 0; e < endpoints.length; e++) {
-        work.push(
-          fetchSources(anilistId, wantedEpisode, "sub", endpoints[e]).then(function (bundle) {
-            return collectFromBundle(bundle, "sub", title);
-          })
-        );
-        work.push(
-          fetchSources(anilistId, wantedEpisode, "dub", endpoints[e]).then(function (bundle) {
-            return collectFromBundle(bundle, "dub", title);
-          })
-        );
+      if (!anilistId) {
+        logStep("no anilist mapping for " + id);
+        return [];
       }
+      logStep("anilist=" + anilistId + " ep=" + wantedEpisode);
 
-      return Promise.all(work).then(function (results) {
-        var merged = [];
-        for (var r = 0; r < results.length; r++) {
-          var part = results[r] || [];
-          for (var k = 0; k < part.length; k++) {
-            merged.push(part[k]);
-          }
-        }
-        return dedupe(merged);
-      });
+      /* Try sub on animehub first (hard-subbed, AnimePahe-style). If that
+       * yields nothing, fall back to the aniwave host. Both sub & dub are
+       * requested in parallel to cut latency. Only as many requests as
+       * needed - Nuvio gives us ~2s. */
+      var collect = function (n) {
+        return n !== null ? collectFromBundle(n, "sub", title) : [];
+      };
+
+      return fetchSources(anilistId, wantedEpisode, "sub", "animehub")
+        .then(function (bundle) {
+          var subs = collect(bundle);
+          if (subs.length > 0) return subs;
+
+          /* animehub had nothing - try the other host; also grab dub. */
+          return Promise.all([
+            fetchSources(anilistId, wantedEpisode, "sub", "aniwave_hls").then(collect),
+            fetchSources(anilistId, wantedEpisode, "dub", "animehub").then(function (n) {
+              return n !== null ? collectFromBundle(n, "dub", title) : [];
+            })
+          ]).then(function (results) {
+            var merged = [];
+            for (var r = 0; r < results.length; r++) {
+              var part = results[r];
+              for (var k = 0; k < part.length; k++) {
+                merged.push(part[k]);
+              }
+            }
+            return merged;
+          });
+        })
+        .then(function (merged) {
+          return dedupe(merged);
+        });
     })
-    .catch(function () {
+    .then(function (finalList) {
+      logStep("returning " + finalList.length + " stream(s)");
+      return finalList;
+    })
+    .catch(function (err) {
+      logStep("error: " + (err && err.message ? err.message : String(err)));
       return [];
     });
 }
 
-module.exports = { getStreams: getStreams };
+/* Export for Nuvio / React Native compatibility */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { getStreams: getStreams };
+} else {
+  global.getStreams = getStreams;
+}

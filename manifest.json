@@ -1,6 +1,6 @@
 {
   "name": "MASTER KEY",
-  "version": "1.12.1",
+  "version": "1.12.2",
   "scrapers": [
     {
       "id": "vidnest",
@@ -13,19 +13,6 @@
       "enabled": true,
       "formats": ["m3u8"],
       "logo": "https://animeya.cc/apple-touch-icon.png",
-      "contentLanguage": ["en", "ja"]
-    },
-    {
-      "id": "animedex",
-      "name": "AnimeDex (Anivexa)",
-      "description": "Clean (no hard-subbed subs) anime HLS via animedex.fun anivexa backend for Nuvio; hard-subbed anime is on Animeya (VidNest)",
-      "version": "1.0.1",
-      "author": "Nuvio AnimeDex Plugin",
-      "supportedTypes": ["tv", "movie"],
-      "filename": "providers/animedex.js",
-      "enabled": true,
-      "formats": ["m3u8"],
-      "logo": "https://animedex.fun/favicon.ico",
       "contentLanguage": ["en", "ja"]
     }
   ]

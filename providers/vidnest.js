@@ -14,7 +14,8 @@ var DEFAULT_UA =
 /* Pre-seeded TMDB->AniList ids so popular titles skip the slow ani.zip
  * round-trip. Keyed as "<mediaType>:<tmdbId>". */
 var LOCAL_ANILIST = {
-  "tv:94664": "108465",    /* Mushoku Tensei */
+  "tv:94664": "108465",    /* Mushoku Tensei (TMDB) */
+  "kitsu:42323": "108465", /* Mushoku Tensei (Kitsu S1) */
   "tv:37854": "21",        /* One Piece */
   "tv:209867": "154587",   /* Frieren */
   "tv:1429": "16498",      /* Attack on Titan */
@@ -94,15 +95,41 @@ function parseBundle(body) {
   return raw;
 }
 
-/* Map TMDB -> AniList. Local table first, ani.zip fallback. Returns a
- * promise resolving to the anilist id (string) or "". */
-function mapAnilist(tmdbId, mediaType) {
-  if (!tmdbId) return Promise.resolve("");
-  var local = LOCAL_ANILIST[mediaType + ":" + tmdbId];
+/* Map TMDB -> AniList. Accepts the ids Nuvio sends: a plain TMDB number or
+ * "kitsu:<id>:<n>" (Kitsu covers anime that TMDB lacks). Local table first,
+ * then Kitsu mappings API, then ani.zip. Resolves to anilist id or "". */
+function mapAnilist(rawId, mediaType) {
+  if (!rawId) return Promise.resolve("");
+
+  var kitsuMatch = String(rawId).match(/^kitsu:(\d+)/);
+  if (kitsuMatch) {
+    var kitsuId = kitsuMatch[1];
+    var local = LOCAL_ANILIST["kitsu:" + kitsuId];
+    if (local) return Promise.resolve(local);
+    return fetchBody("https://kitsu.app/api/edge/anime/" + kitsuId + "/mappings", 900, {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "application/vnd.api+json"
+    }).then(function (r) {
+      var parsed = safeParseJson(r.body || "");
+      var datas = parsed && parsed.data ? parsed.data : null;
+      if (!datas) return "";
+      for (var i = 0; i < datas.length; i++) {
+        var site = datas[i] && datas[i].attributes ? datas[i].attributes.externalSite : null;
+        var ext = datas[i] && datas[i].attributes ? datas[i].attributes.externalId : null;
+        if (site === "anilist/anime" && ext !== undefined && ext !== null) {
+          return String(ext);
+        }
+      }
+      return "";
+    });
+  }
+
+  /* Plain TMDB numeric id - local table or ani.zip. */
+  var local = LOCAL_ANILIST[mediaType + ":" + rawId];
   if (local) return Promise.resolve(local);
 
   var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
-  var url = MAPPING_BASE + "?" + field + "=" + encodeURIComponent(String(tmdbId));
+  var url = MAPPING_BASE + "?" + field + "=" + encodeURIComponent(String(rawId));
   return fetchBody(url, 900).then(function (r) {
     var parsed = safeParseJson(r.body || "");
     var m = parsed && parsed.mappings ? parsed.mappings : null;

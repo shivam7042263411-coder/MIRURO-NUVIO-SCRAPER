@@ -614,36 +614,45 @@ function decryptFlix(pageData, tokenJson) {
   return url;
 }
 
-/* Extract the SvelteKit route data object from the embed page HTML. */
+/* Extract the SvelteKit route data object from the embed page HTML. Tolerant
+ * of the marker being quoted/unquoted/whitespace variants (fresh pages can
+ * serialize differently than the reference snapshot). */
 function extractRouteData(html) {
-  var marker = '{type:"data",data:{';
-  var i = String(html).indexOf(marker);
-  if (i < 0) {
-    marker = '{type:"loaded",data:{';
-    i = String(html).indexOf(marker);
-  }
-  if (i < 0) return null;
-  var depth = 0, inStr = false, esc = false;
-  var j = i;
-  while (j < html.length) {
-    var c = html.charAt(j);
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === "\\") esc = true;
-      else if (c === '"') inStr = false;
-    } else {
-      if (c === '"') inStr = true;
-      else if (c === "{") depth++;
-      else if (c === "}") { depth--; if (depth === 0) break; }
+  var s = String(html);
+  function scanFrom(i) {
+    while (i >= 0 && s.charAt(i) !== "{") i--;
+    if (i < 0) return null;
+    var depth = 0, inStr = false, esc = false, j = i;
+    while (j < s.length) {
+      var c = s.charAt(j);
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+      } else {
+        if (c === '"') inStr = true;
+        else if (c === "{") depth++;
+        else if (c === "}") { depth--; if (depth === 0) break; }
+      }
+      j++;
     }
-    j++;
+    var text = s.substring(i, j + 1);
+    text = text.replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, function (m, pre, key, colon) {
+      return pre + '"' + key + '"' + colon;
+    });
+    var obj = safeParseJson(text);
+    if (obj && typeof obj === "object") {
+      return (obj.type === "data" || obj.type === "loaded") && obj.data ? obj.data : obj;
+    }
+    return null;
   }
-  var text = html.substring(i, j + 1);
-  text = text.replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, function (m, pre, key, colon) {
-    return pre + '"' + key + '"' + colon;
-  });
-  var obj = safeParseJson(text);
-  return obj && obj.data ? obj.data : null;
+  var markers = ['{type:"data"', '"type":"data"', 'type:"data"', 'type:"loaded"', '"type":"loaded"'];
+  for (var m = 0; m < markers.length; m++) {
+    var hit = scanFrom(s.indexOf(markers[m]));
+    if (hit) return hit;
+  }
+  var whole = safeParseJson(s);
+  return whole && typeof whole === "object" ? whole : null;
 }
 
 /* Map a Nuvio id (kitsu:<id>:<n> or plain TMDB) to AniList. */
@@ -711,7 +720,9 @@ function resolveEpisode(anilistId, episodeNum, title, dbg) {
     })
     .then(function (dataLink) {
       if (!dataLink) return null;
-      var headers = { "User-Agent": ua, "Referer": FLIX_ORIGIN + "/" };
+      /* The embed iframe lives inside animelok.live, so it gets an
+       * animelok referer in a real browser. */
+      var headers = { "User-Agent": ua, "Referer": "https://animelok.live/" };
       return fetchBody(dataLink, 1600, headers).then(function (r2) {
         dbg.push("embed=" + r2.status + "/" + (r2.body || "").length);
         var pageData = extractRouteData(r2.body || "");

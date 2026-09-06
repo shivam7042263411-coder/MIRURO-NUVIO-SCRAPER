@@ -25,8 +25,11 @@ var ANIMELOK_API = "https://animelok.live/api/flix";
 var LOCAL_ANILIST = {
   "tv:94664": "108465",    /* Mushoku Tensei */
   "kitsu:42323": "108465", /* Mushoku Tensei */
-  "kitsu:99009": "21",     /* One Piece */
-  "tv:37854": "21"         /* One Piece */
+  "kitsu:12": "21",        /* One Piece */
+  "tv:37854": "21",        /* One Piece */
+  "tv:209867": "154587",   /* Frieren */
+  "tv:1429": "16498",      /* Attack on Titan */
+  "tv:85937": "101922"     /* Demon Slayer */
 };
 
 function deadline(ms) {
@@ -650,7 +653,7 @@ function mapAnilist(rawId, mediaType) {
   if (kitsuMatch) {
     var kitsuId = kitsuMatch[1];
     if (LOCAL_ANILIST["kitsu:" + kitsuId]) return Promise.resolve(LOCAL_ANILIST["kitsu:" + kitsuId]);
-    return fetchBody("https://kitsu.app/api/edge/anime/" + kitsuId + "/mappings", 900, {
+    return fetchBody("https://kitsu.app/api/edge/anime/" + kitsuId + "/mappings", 700, {
       "User-Agent": "Mozilla/5.0",
       "Accept": "application/vnd.api+json"
     }).then(function (r) {
@@ -668,7 +671,7 @@ function mapAnilist(rawId, mediaType) {
   if (LOCAL_ANILIST[mediaType + ":" + rawId]) return Promise.resolve(LOCAL_ANILIST[mediaType + ":" + rawId]);
   var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
   var url = "https://api.ani.zip/mappings?" + field + "=" + encodeURIComponent(String(rawId));
-  return fetchBody(url, 900).then(function (r) {
+  return fetchBody(url, 700).then(function (r) {
     var parsed = safeParseJson(r.body || "");
     var m = parsed && parsed.mappings ? parsed.mappings : null;
     return m && m.anilist_id !== undefined && m.anilist_id !== null ? String(m.anilist_id) : "";
@@ -685,7 +688,7 @@ function resolveEpisode(anilistId, episodeNum, title) {
   if (!anilistId) return Promise.resolve(null);
   var url = ANIMELOK_API + "/" + encodeURIComponent(anilistId) + "/" + encodeURIComponent(episodeNum);
   var ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-  return fetchBody(url, 2000, { "User-Agent": ua, "Referer": "https://animelok.live/" })
+  return fetchBody(url, 1200, { "User-Agent": ua, "Referer": "https://animelok.live/" })
     .then(function (r) {
       var api = safeParseJson(r.body || "");
       var servers = api && Array.isArray(api.servers) ? api.servers : null;
@@ -707,7 +710,7 @@ function resolveEpisode(anilistId, episodeNum, title) {
     .then(function (dataLink) {
       if (!dataLink) return null;
       var headers = { "User-Agent": ua, "Referer": FLIX_ORIGIN + "/" };
-      return fetchBody(dataLink, 3000, headers).then(function (r2) {
+      return fetchBody(dataLink, 1300, headers).then(function (r2) {
         var pageData = extractRouteData(r2.body || "");
         if (!pageData) return null;
         var L = pageData[deriveFields(pageData.obfuscation_seed || "").tokenField] || "";
@@ -715,7 +718,7 @@ function resolveEpisode(anilistId, episodeNum, title) {
         var origin = "https://flixcloud.cc";
         var dlHost = String(dataLink).match(/^https?:\/\/[^/]+/);
         if (dlHost) origin = dlHost[0];
-        return fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 2500, {
+        return fetchBody(origin + "/api/m3u8/" + encodeURIComponent(L), 1100, {
           "User-Agent": ua,
           "Referer": origin + "/e/" + L
         }).then(function (r3) {
@@ -738,18 +741,21 @@ function resolveEpisode(anilistId, episodeNum, title) {
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   var id = String(tmdbId || "").trim();
-  if (!id) return Promise.resolve([]);
-  var isMovie = mediaType === "movie";
-  var wantedEpisode = isMovie ? 1 : Number(episodeNum) || 1;
-  var title = isMovie ? "Movie " + id : "S01E" + pad2(wantedEpisode);
-  return mapAnilist(id, mediaType).then(function (anilistId) {
-    if (!anilistId) return [];
-    return resolveEpisode(anilistId, wantedEpisode, title).then(function (stream) {
-      return stream ? [stream] : [];
+  var chain = Promise.resolve([]);
+  if (id) {
+    var isMovie = mediaType === "movie";
+    var wantedEpisode = isMovie ? 1 : Number(episodeNum) || 1;
+    var title = isMovie ? "Movie " + id : "S01E" + pad2(wantedEpisode);
+    chain = mapAnilist(id, mediaType).then(function (anilistId) {
+      if (!anilistId) return [];
+      return resolveEpisode(anilistId, wantedEpisode, title).then(function (stream) {
+        return stream ? [stream] : [];
+      });
+    }).catch(function () {
+      return [];
     });
-  }).catch(function () {
-    return [];
-  });
+  }
+  return Promise.race([chain, deadline(1500).then(function () { return []; })]);
 }
 
 if (typeof module !== "undefined" && module.exports) {

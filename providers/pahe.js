@@ -17,11 +17,11 @@ var PAHE_BASE = "https://animepahe.pw";
  * Get it from browser DevTools (Application -> Cookies -> animepahe.pw)
  * or from a cookie-extension export of the solved browser tab.
  */
-var PAHE_COOKIE = "cf_clearance=q3Lb394.1pj7EnZdJiixB3CxLZngr8dJ1MBXb.C2_.A-1788788097-1.2.1.1-GHSE20JvJ4jCiKNPkovhDWw9SujEQbzq99W0dhtEbSU62XL8.SCec.mu7CShncCWaMD3IFWbABgEQoKyxnvCsZg6AbDM5g5SQT7mtGjfARglf27wvabAIaClJVsEtsHvEVKIdfJkjzFoqNKVjYkBrRyXtdmizbX7vJQfcYpOOvpJkDopXAQSwTnIVWYAq87zRhXJtffhUYABUsQ.O5XAIQPbvdqOYZXExkbrT1ORwNaqpagbwS4U7WFcQRAnLFo4sS3j0elyHVVJ8AEK70ILLPmzVNfmORFQFUDG8QCuAnnJ6C0Ktt_wRDZ_5emBWqpyHJF4ZM7HeOFD9mAsQ.wwXebf8GjpI9nv1jrfk_hiL0pxvdUxpvB4f1C4PllycoFrTjIIGNeMj8WLUd5qnuJwabZoKspavUnICBu9UCP6wZ30FcyN44vyFVh9mm1C.S9jY62UuPkjIrVSqTWLK55eU9zBK1uNzqUq6JeS3laWk32KTDIr9_c63BMlnkDvyg5.uMLWB.aRPIoaX.qGHUSYz.D_THp61pyxwps1pgycK6w.xt0X7MzLV.jFNCpHZqQGG0NM1lPddeAbJWCQJjLyshuvb2fTNM.R0p0RYL7lfk0M2G9v0ntVjmUGzio2zimSA3g2lUlGYEaBtU_6PaU2a7fJNqvxRsGQyoos6uZj1Lg";
+var PAHE_COOKIE = "cf_clearance=PASTE_ME";
 
 /* Set to the exact User-Agent string of the browser that solved the cookie. */
 var PAHE_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 var KWIK_REFERER = "https://kwik.cx/";
 
@@ -96,7 +96,7 @@ function mapAnilist(tmdbId, mediaType) {
   if (LOCAL_ANILIST[key]) return Promise.resolve(LOCAL_ANILIST[key]);
   var field = mediaType === "movie" ? "themoviedb_movie_id" : "themoviedb_id";
   var url = "https://api.ani.zip/mappings?" + field + "=" + encodeURIComponent(String(tmdbId));
-  return fetchBody(url, 2000).then(function (r) {
+  return fetchBody(url, 3000).then(function (r) {
     var parsed = safeParseJson(r.body || "");
     var m = parsed && parsed.mappings ? parsed.mappings : null;
     return m && m.anilist_id !== undefined && m.anilist_id !== null ? String(m.anilist_id) : "";
@@ -111,7 +111,7 @@ function anilistTitle(anilistId) {
   };
   return fetchBody(
     "https://graphql.anilist.co",
-    3000,
+    4000,
     "POST",
     JSON.stringify(q),
     { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": PAHE_UA }
@@ -131,11 +131,11 @@ function normalize(s) {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/^\s+|\s+$/g, "");
 }
 
-/* pahe search -> best matching anime {id, title, episodes}. */
+/* pahe search -> best matching anime {id, title, episodes, session}. */
 function paheSearchId(titleText, englishText, year) {
   function doSearch(q) {
     var url = PAHE_BASE + "/api?m=search&q=" + encodeURIComponent(q) + "&page=1";
-    return fetchBody(url, 3000, "GET", null, paheHeaders()).then(function (r) {
+    return fetchBody(url, 4000, "GET", null, paheHeaders()).then(function (r) {
       var parsed = safeParseJson(r.body || "");
       var data = parsed && Array.isArray(parsed.data) ? parsed.data : [];
       if (data.length === 0) return null;
@@ -168,11 +168,11 @@ function paheSearchId(titleText, englishText, year) {
   });
 }
 
-/* Release list -> session for one episode. */
-function paheEpisodeSession(animeId, wantedEp, page) {
-  var url = PAHE_BASE + "/api?m=release&id=" + encodeURIComponent(animeId) +
+/* Release list -> session for one episode. Uses anime SESSION UUID. */
+function paheEpisodeSession(animeSession, wantedEp, page) {
+  var url = PAHE_BASE + "/api?m=release&id=" + encodeURIComponent(animeSession) +
             "&sort=episode_asc&page=" + (page || 1);
-  return fetchBody(url, 3000, "GET", null, paheHeaders()).then(function (r) {
+  return fetchBody(url, 4000, "GET", null, paheHeaders()).then(function (r) {
     var parsed = safeParseJson(r.body || "");
     var data = parsed && Array.isArray(parsed.data) ? parsed.data : [];
     for (var i = 0; i < data.length; i++) {
@@ -181,7 +181,7 @@ function paheEpisodeSession(animeId, wantedEp, page) {
       }
     }
     var next = parsed && parsed.next_page_url ? parsed.next_page_url : null;
-    if (next && data.length > 0) return paheEpisodeSession(animeId, wantedEp, (page || 1) + 1);
+    if (next && data.length > 0) return paheEpisodeSession(animeSession, wantedEp, (page || 1) + 1);
     return null;
   });
 }
@@ -191,7 +191,7 @@ function pahePlayPage(animeId, session) {
   var url = PAHE_BASE + "/play/" + encodeURIComponent(animeId) + "/" + encodeURIComponent(session);
   var headers = paheHeaders();
   headers["Referer"] = PAHE_BASE + "/anime/" + encodeURIComponent(animeId);
-  return fetchBody(url, 4000, "GET", null, headers).then(function (r) {
+  return fetchBody(url, 5000, "GET", null, headers).then(function (r) {
     return { html: r.body || "", url: url, status: r.status };
   });
 }
@@ -223,7 +223,7 @@ function resolveKwik(kwikUrl, referer) {
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9"
   };
-  return fetchBody(kwikUrl, 5000, "GET", null, headers).then(function (r) {
+  return fetchBody(kwikUrl, 6000, "GET", null, headers).then(function (r) {
     var html = r.body || "";
     /* 1) Direct absolute m3u8 in page */
     var direct = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/);
@@ -241,7 +241,9 @@ function resolveKwik(kwikUrl, referer) {
     if (tokenMatch) {
       return "https://kwik.cx/e/" + tokenMatch[1];
     }
-    return "";
+
+    /* 4) Last resort: try the kwik URL directly as m3u8 source */
+    return kwikUrl;
   });
 }
 

@@ -16,7 +16,7 @@ var PAHE_BASE = "https://animepahe.pw";
  * Get it from browser DevTools (Application -> Cookies -> animepahe.pw)
  * or from a cookie-extension export of the solved browser tab.
  */
-var PAHE_COOKIE = "cf_clearance=PASTE_ME";
+var PAHE_COOKIE = "cf_clearance=q3Lb394.1pj7EnZdJiixB3CxLZngr8dJ1MBXb.C2_.A-1788788097-1.2.1.1-GHSE20JvJ4jCiKNPkovhDWw9SujEQbzq99W0dhtEbSU62XL8.SCec.mu7CShncCWaMD3IFWbABgEQoKyxnvCsZg6AbDM5g5SQT7mtGjfARglf27wvabAIaClJVsEtsHvEVKIdfJkjzFoqNKVjYkBrRyXtdmizbX7vJQfcYpOOvpJkDopXAQSwTnIVWYAq87zRhXJtffhUYABUsQ.O5XAIQPbvdqOYZXExkbrT1ORwNaqpagbwS4U7WFcQRAnLFo4sS3j0elyHVVJ8AEK70ILLPmzVNfmORFQFUDG8QCuAnnJ6C0Ktt_wRDZ_5emBWqpyHJF4ZM7HeOFD9mAsQ.wwXebf8GjpI9nv1jrfk_hiL0pxvdUxpvB4f1C4PllycoFrTjIIGNeMj8WLUd5qnuJwabZoKspavUnICBu9UCP6wZ30FcyN44vyFVh9mm1C.S9jY62UuPkjIrVSqTWLK55eU9zBK1uNzqUq6JeS3laWk32KTDIr9_c63BMlnkDvyg5.uMLWB.aRPIoaX.qGHUSYz.D_THp61pyxwps1pgycK6w.xt0X7MzLV.jFNCpHZqQGG0NM1lPddeAbJWCQJjLyshuvb2fTNM.R0p0RYL7lfk0M2G9v0ntVjmUGzio2zimSA3g2lUlGYEaBtU_6PaU2a7fJNqvxRsGQyoos6uZj1Lg";
 
 /* Set to the exact User-Agent string of the browser that solved the cookie. */
 var PAHE_UA =

@@ -318,8 +318,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     return anilistTitle(anilistId).then(function (info) {
       if (!info || !info.title) return [];
       return paheSearchId(info.title, info.english, info.year).then(function (anime) {
-        if (!anime || !anime.id) return [];
-        return paheEpisodeSession(anime.id, wantedEpisode, 1).then(function (found) {
+        if (!anime || !anime.session) return [];
+        return paheEpisodeSession(anime.session, wantedEpisode, 1).then(function (found) {
           if (!found) return [];
           return pahePlayPage(anime.id, found.session).then(function (play) {
             var kwik = findKwik(play.html);

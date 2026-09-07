@@ -1,6 +1,6 @@
 {
   "name": "MASTER KEY",
-  "version": "1.12.3",
+  "version": "1.13.0",
   "scrapers": [
     {
       "id": "vidnest",
@@ -13,6 +13,19 @@
       "enabled": true,
       "formats": ["m3u8"],
       "logo": "https://animeya.cc/apple-touch-icon.png",
+      "contentLanguage": ["en", "ja"]
+    },
+    {
+      "id": "pahe",
+      "name": "AnimePahe (On-Device)",
+      "description": "Direct AnimePahe HLS from your device (home IP). Needs cf_clearance cookie from browser. See PAHE_COOKIE in providers/pahe.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Pahe Plugin",
+      "supportedTypes": ["tv"],
+      "filename": "providers/pahe.js",
+      "enabled": true,
+      "formats": ["m3u8"],
+      "logo": "https://animepahe.pw/favicon.ico",
       "contentLanguage": ["en", "ja"]
     }
   ]

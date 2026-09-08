@@ -9,7 +9,7 @@
  *   - solve in a browser while on the SAME Wi-Fi as the TV/phone, and
  *   - set PAHE_UA to the exact User-Agent of that browser.
  */
-var PAHE_BASE = "https://animepahe.pw";
+var PAHE_BASE = "https://master-key-p52g.onrender.com";
 
 /* Paste your cf_clearance cookie value here. Accepted formats:
  *   "cf_clearance=Abc123....=="
